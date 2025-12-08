@@ -1,0 +1,279 @@
+/* Global Styles */
+:root {
+  --primary-color: #2a9d8f;
+  --background-color: #f0f4f8;
+  --text-color: #264653;
+  --card-bg: #ffffff;
+  --border-radius: 12px;
+  --box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+}
+
+body {
+  margin: 0;
+  font-family: 'Helvetica Neue', sans-serif;
+  background-color: var(--background-color);
+  color: var(--text-color);
+  min-height: 100vh;
+}
+
+.App {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.App-header {
+  padding: 2rem;
+  text-align: center;
+  font-size: 2rem;
+  font-weight: bold;
+  background-color: var(--background-color);
+}
+
+.App-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  text-align: center;
+}
+
+.start-button,
+.outline-button {
+  font-size: 1.2rem;
+  padding: 1rem 2rem;
+  margin: 0.5rem;
+  border-radius: var(--border-radius);
+  box-shadow: var(--box-shadow);
+  border: none;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.start-button {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+.start-button:hover {
+  background-color: #21867a;
+}
+
+.outline-button {
+  background-color: transparent;
+  border: 2px solid var(--primary-color);
+  color: var(--primary-color);
+}
+
+.outline-button:hover {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+.question-card {
+  background-color: var(--card-bg);
+  padding: 2rem;
+  border-radius: var(--border-radius);
+  box-shadow: var(--box-shadow);
+  max-width: 600px;
+  width: 100%;
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.answer-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.previous-button {
+  margin-top: 1rem;
+  background: transparent;
+  border: 2px solid var(--primary-color);
+  padding: 0.75rem 1.5rem;
+  color: var(--primary-color);
+  border-radius: var(--border-radius);
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.previous-button:hover {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+.results-list,
+.suggestions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 700px;
+  margin: 0 auto;
+  text-align: left;
+}
+
+.suggestion-card {
+  background-color: var(--card-bg);
+  padding: 1rem;
+  border-radius: var(--border-radius);
+  box-shadow: var(--box-shadow);
+}
+
+.score-card {
+  text-align: center;
+  background-color: var(--card-bg);
+  padding: 2rem;
+  border-radius: var(--border-radius);
+  box-shadow: var(--box-shadow);
+  margin-top: 2rem;
+  width: 100%;
+  max-width: 800px;
+}
+
+.chart-wrapper {
+  margin-bottom: 2rem;
+}
+
+.details-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 2rem;
+  flex-wrap: wrap;
+}
+
+.social-footer {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+  padding: 2rem 0;
+}
+
+.social-footer a {
+  color: var(--primary-color);
+  transition: transform 0.3s ease;
+}
+
+.social-footer a:hover {
+  transform: scale(1.2);
+}
+
+.fade-in {
+  animation: fadeIn 0.5s ease-in-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(15px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.sector-dropdown {
+  padding: 1rem; /* increased */
+  font-size: 1.2rem; /* larger font */
+  border-radius: var(--border-radius);
+  border: 2px solid var(--primary-color);
+  background-color: white;
+  color: var(--text-color);
+  margin-bottom: 1.5rem;
+  width: 300px; /* wider */
+  text-align: center;
+}
+.App-description {
+  text-align: center;
+  margin: 2rem auto;
+  max-width: 800px;
+  font-size: 1.2rem;
+  padding: 0 2rem;
+  line-height: 1.6;
+}
+.refresh-button {
+  margin-top: 2rem;
+  background-color: var(--primary-color);
+  color: white;
+  border: none;
+  padding: 1rem 2rem; /* increased padding */
+  border-radius: var(--border-radius);
+  font-size: 1.2rem; /* larger font size */
+  cursor: pointer;
+  box-shadow: var(--box-shadow);
+  transition: background-color 0.3s ease;
+}
+
+.refresh-button:hover {
+  background-color: #21867a;
+}
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+}
+
+.modal-content {
+  background: white;
+  padding: 2rem;
+  border-radius: 12px;
+  max-width: 400px;
+  text-align: center;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+}
+
+.modal-buttons {
+  margin-top: 1.5rem;
+  display: flex;
+  justify-content: space-around;
+}
+
+.modal-buttons button {
+  padding: 0.5rem 1.2rem;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.modal-buttons button:first-child {
+  background-color: #4caf50;
+  color: white;
+}
+
+.modal-buttons button:last-child {
+  background-color: #f44336;
+  color: white;
+}
+.details-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 100vh;
+  padding: 1rem;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+/* Global: remove default bullets everywhere */
+ul,
+ol {
+  list-style: none;
+  padding-left: 0;
+  margin: 0;
+}
+
