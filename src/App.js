@@ -44,7 +44,7 @@ import "./index.css";
 
 export default function App() {
   return (
-    <Router basename="/esg-assessment">
+    <Router>
       <AuthProvider>
         <Routes>
           {/* -------- Public -------- */}
