@@ -876,11 +876,11 @@ const handleExportPDF = async () => {
   chip(PAGE.l + 320, chipY + 54, "Social", pillars.S);
   chip(PAGE.l + 320, chipY + 108, "Governance", pillars.G);
 
-  /* ---------- Report details CARD (FIXED so “Version” never clips) ---------- */
+  /* ---------- Report details CARD ---------- */
   const detailsX = PAGE.l;
   const detailsY = 380;
   const detailsW = PAGE.w - PAGE.l - PAGE.r;
-  const detailsH = 230; // ✅ increased (was too tight)
+  const detailsH = 230;
 
   pdf.setFillColor(255, 255, 255);
   pdf.roundedRect(detailsX, detailsY, detailsW, detailsH, 16, 16, "F");
@@ -898,10 +898,9 @@ const handleExportPDF = async () => {
     ["Last assessment", reportMeta.lastAssessment],
     ["Assessment ID", reportMeta.assessmentId],
     ["Generated on", reportMeta.generatedOn],
-    ["Version", reportMeta.version], // ✅ will fit now
+    ["Version", reportMeta.version],
   ];
 
-  // ✅ cleaner + shorter: no redundant table header
   autoTable(pdf, {
     startY: detailsY + 40,
     head: [],
@@ -978,7 +977,7 @@ const handleExportPDF = async () => {
   );
 
   /* =========================================================
-     KEY FINDINGS
+     KEY FINDINGS  ✅ FIX: force full-width table like Appendix
   ========================================================= */
   y = newPage("Key Findings");
   addTOC("Key Findings");
@@ -989,11 +988,15 @@ const handleExportPDF = async () => {
     y
   );
 
-  // top actions table
   const topActions = (sectorSuggestions || []).slice(0, 6).map((s, idx) => {
     const tags = (s.tags || []).slice(0, 4).map((t) => `#${t}`).join(" ");
     return [String(idx + 1), s.text, tags || "—", pillarLabels[pillarAtRiskKey]];
   });
+
+  // ✅ full table width (same logic as Appendix)
+  const tableW = PAGE.w - PAGE.l - PAGE.r;
+  const KF_COLW = { idx: 24, tags: 120, focus: 70 };
+  KF_COLW.action = tableW - KF_COLW.idx - KF_COLW.tags - KF_COLW.focus;
 
   autoTable(pdf, {
     startY: y,
@@ -1002,6 +1005,7 @@ const handleExportPDF = async () => {
       ? topActions
       : [["—", "Run an assessment to unlock actions.", "—", "—"]],
     margin: { left: PAGE.l, right: PAGE.r },
+    tableWidth: tableW, // ✅ important
     styles: {
       fontSize: 9,
       cellPadding: 6,
@@ -1017,10 +1021,10 @@ const handleExportPDF = async () => {
       fontStyle: "bold",
     },
     columnStyles: {
-      0: { cellWidth: 24, halign: "center" },
-      1: { cellWidth: 320 },
-      2: { cellWidth: 140, textColor: BRAND.muted },
-      3: { cellWidth: 90 },
+      0: { cellWidth: KF_COLW.idx, halign: "center" },
+      1: { cellWidth: KF_COLW.action },
+      2: { cellWidth: KF_COLW.tags, textColor: BRAND.muted },
+      3: { cellWidth: KF_COLW.focus, halign: "center" },
     },
     theme: "striped",
     didDrawPage: () => {
@@ -1030,7 +1034,7 @@ const handleExportPDF = async () => {
   });
 
   /* =========================================================
-     ACTION PLAN
+     ACTION PLAN ✅ FIX: force full-width table like Appendix
   ========================================================= */
   y = newPage("Action Plan");
   addTOC("Action Plan");
@@ -1068,11 +1072,31 @@ const handleExportPDF = async () => {
     return [s.text, tags || "—", p, impact, effort, target, "Planned"];
   });
 
+  // ✅ full table width (same logic as Appendix)
+  const AP_TABLEW = tableW;
+  const AP_COLW = {
+    tags: 90,
+    pillar: 55,
+    impact: 45,
+    effort: 45,
+    target: 55,
+    status: 48,
+  };
+  AP_COLW.action =
+    AP_TABLEW -
+    AP_COLW.tags -
+    AP_COLW.pillar -
+    AP_COLW.impact -
+    AP_COLW.effort -
+    AP_COLW.target -
+    AP_COLW.status;
+
   autoTable(pdf, {
     startY: y,
     head: [["Action", "Tags", "Pillar", "Impact", "Effort", "Target", "Status"]],
     body: actionRows.length ? actionRows : [["—", "—", "—", "—", "—", "—", "—"]],
     margin: { left: PAGE.l, right: PAGE.r },
+    tableWidth: AP_TABLEW, // ✅ important
     styles: {
       fontSize: 9,
       cellPadding: 6,
@@ -1088,13 +1112,13 @@ const handleExportPDF = async () => {
       fontStyle: "bold",
     },
     columnStyles: {
-      0: { cellWidth: 240 },
-      1: { cellWidth: 120, textColor: BRAND.muted },
-      2: { cellWidth: 70 },
-      3: { cellWidth: 55, halign: "center" },
-      4: { cellWidth: 55, halign: "center" },
-      5: { cellWidth: 70, halign: "center" },
-      6: { cellWidth: 65, halign: "center" },
+      0: { cellWidth: AP_COLW.action },
+      1: { cellWidth: AP_COLW.tags, textColor: BRAND.muted },
+      2: { cellWidth: AP_COLW.pillar, halign: "center" },
+      3: { cellWidth: AP_COLW.impact, halign: "center" },
+      4: { cellWidth: AP_COLW.effort, halign: "center" },
+      5: { cellWidth: AP_COLW.target, halign: "center" },
+      6: { cellWidth: AP_COLW.status, halign: "center" },
     },
     theme: "striped",
     didDrawPage: () => {
@@ -1129,7 +1153,7 @@ const handleExportPDF = async () => {
   );
 
   /* =========================================================
-     APPENDIX — RESPONSES (FIXED WIDTH, NO CUT)
+     APPENDIX — RESPONSES
   ========================================================= */
   y = newPage("Appendix");
   addTOC("Appendix — Responses");
@@ -1157,17 +1181,16 @@ const handleExportPDF = async () => {
     ];
   });
 
-  // ✅ THIS is the fix for the right-side cut:
-  const tableW = PAGE.w - PAGE.l - PAGE.r;
+  const tableW2 = PAGE.w - PAGE.l - PAGE.r;
   const COLW = { pillar: 70, answer: 95, critical: 48, tags: 70 };
-  COLW.question = tableW - COLW.pillar - COLW.answer - COLW.critical - COLW.tags;
+  COLW.question = tableW2 - COLW.pillar - COLW.answer - COLW.critical - COLW.tags;
 
   autoTable(pdf, {
     startY: y,
     head: [["Pillar", "Question", "Answer", "Critical", "Tags"]],
     body: rowsResp.length ? rowsResp : [["—", "—", "—", "—", "—"]],
     margin: { left: PAGE.l, right: PAGE.r },
-    tableWidth: tableW,
+    tableWidth: tableW2,
     styles: {
       fontSize: 8.2,
       cellPadding: 4,
@@ -1252,6 +1275,7 @@ const handleExportPDF = async () => {
   const fileName = `EcoTrack_ESG_Report_${new Date().toISOString().slice(0, 10)}.pdf`;
   pdf.save(fileName);
 };
+
 
 
 
