@@ -1,5 +1,12 @@
 // src/pages/Questionnaire.jsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+
 import "../components/landing.css";
 import { useNavigate } from "react-router-dom";
 
@@ -16,7 +23,10 @@ import {
 } from "firebase/firestore";
 
 import { scoreAssessment as scoreAssessmentOriginal } from "../utils/scoring";
-import { hasCriticalPillar, DEFAULT_CRITICAL_THRESHOLD } from "../utils/criticalGuard";
+import {
+  hasCriticalPillar,
+  DEFAULT_CRITICAL_THRESHOLD,
+} from "../utils/criticalGuard";
 
 export default function Questionnaire({ questions = [], sector }) {
   const navigate = useNavigate();
@@ -30,6 +40,10 @@ export default function Questionnaire({ questions = [], sector }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const pillars = ["Environmental", "Social", "Governance"];
+
+  // 🔹 refs for robust scroll-to-top
+  const pageRef = useRef(null);
+  const topRef = useRef(null);
 
   // 0–4 maturity scale options
   const SCALE_OPTIONS = [
@@ -49,6 +63,7 @@ export default function Questionnaire({ questions = [], sector }) {
   // ---------- HELPERS ----------
   const grouped = useMemo(() => {
     const byPillar = { Environmental: [], Social: [], Governance: [] };
+
     (questions || []).forEach((q) => {
       const pillar =
         q.category ||
@@ -59,9 +74,12 @@ export default function Questionnaire({ questions = [], sector }) {
           : q.pillar === "G"
           ? "Governance"
           : null);
+
       if (!pillar) return;
+
       const localIndex = byPillar[pillar].length;
       const qid = q.id || `${sector}:${pillar}:${localIndex}`;
+
       byPillar[pillar].push({
         ...q,
         qid,
@@ -69,6 +87,7 @@ export default function Questionnaire({ questions = [], sector }) {
         text: q.question || q.text || "",
       });
     });
+
     return byPillar;
   }, [questions, sector]);
 
@@ -93,19 +112,16 @@ export default function Questionnaire({ questions = [], sector }) {
     );
 
   const handleAnswer = async (qid, option) => {
-    // option is one of SCALE_OPTIONS
     const updated = {
       ...answers,
-      [qid]: {
-        label: option.label,
-        score: option.score,
-      },
+      [qid]: { label: option.label, score: option.score },
     };
     setAnswers(updated);
 
     if (!user) return;
+
     try {
-      const id = await ensureDraft(); // guarantees ID
+      const id = await ensureDraft();
       const ref = doc(db, "users", user.uid, "assessments", id);
       await updateDoc(ref, {
         answers: updated,
@@ -134,6 +150,7 @@ export default function Questionnaire({ questions = [], sector }) {
   const ensureDraft = async () => {
     if (!user) throw new Error("No authenticated user");
     if (assessmentId) return assessmentId;
+
     const colRef = collection(db, "users", user.uid, "assessments");
     const docRef = await addDoc(colRef, {
       sector,
@@ -142,6 +159,7 @@ export default function Questionnaire({ questions = [], sector }) {
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+
     setAssessmentId(docRef.id);
     return docRef.id;
   };
@@ -159,130 +177,111 @@ export default function Questionnaire({ questions = [], sector }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, sector]);
 
-  // ---------- SCORING (robust, 0–4 scale) ----------
-// ---------- SCORING (robust, uses scoring.js with 0–4 scale) ----------
-const safeScoreAssessment = () => {
-  try {
-    const res = scoreAssessmentOriginal(questions, answers, {
-      sector,
-      allowPartial: false,
-      treatUnknownAsZero: false,
-    });
-
-    if (!res || typeof res !== "object") {
-      throw new Error("scoreAssessment returned nothing");
-    }
-
-    const { pillars, overall, rating } = res; // 👈 take rating too
-
-    if (
-      !pillars ||
-      ["E", "S", "G"].some(
-        (k) => typeof pillars[k] !== "number" || Number.isNaN(pillars[k])
-      )
-    ) {
-      throw new Error("pillars invalid");
-    }
-    if (typeof overall !== "number" || Number.isNaN(overall)) {
-      throw new Error("overall invalid");
-    }
-
-    const pillarScores = {
-      E: pillars.E / 100,
-      S: pillars.S / 100,
-      G: pillars.G / 100,
-    };
-    const overall01 = overall / 100;
-
-    return { pillarScores, overall: overall01, rating }; // 👈 include rating
-  } catch (err) {
-    console.warn("[scoreAssessment] failed, using fallback:", err);
-
-    // fallback like we already wrote
-    const scorePillar = (key) => {
-      const list = grouped[key] || [];
-      if (!list.length) return 0;
-
-      let totalScore = 0;
-      let answeredCount = 0;
-
-      list.forEach((q) => {
-        const ans = answers[q.qid];
-        if (!ans) return;
-
-        let numeric = 0;
-        if (typeof ans === "object" && typeof ans.score === "number") {
-          numeric = ans.score;
-        } else if (ans === "Yes") {
-          numeric = 1;
-        } else {
-          numeric = 0;
-        }
-
-        if (numeric < 0) numeric = 0;
-        if (numeric > 4) numeric = 4;
-
-        totalScore += numeric;
-        answeredCount += 1;
+  // ---------- SCORING ----------
+  const safeScoreAssessment = () => {
+    try {
+      const res = scoreAssessmentOriginal(questions, answers, {
+        sector,
+        allowPartial: false,
+        treatUnknownAsZero: false,
       });
 
-      if (!answeredCount) return 0;
-      const maxScore = answeredCount * 4;
-      return maxScore ? totalScore / maxScore : 0;
-    };
+      if (!res || typeof res !== "object") {
+        throw new Error("scoreAssessment returned nothing");
+      }
 
-    const E = scorePillar("Environmental");
-    const S = scorePillar("Social");
-    const G = scorePillar("Governance");
+      const { pillars: scoredPillars, overall, rating } = res;
 
-    const pillarScores = { E, S, G };
-    const overall = (E + S + G) / 3;
+      if (
+        !scoredPillars ||
+        ["E", "S", "G"].some(
+          (k) =>
+            typeof scoredPillars[k] !== "number" ||
+            Number.isNaN(scoredPillars[k])
+        )
+      ) {
+        throw new Error("pillars invalid");
+      }
+      if (typeof overall !== "number" || Number.isNaN(overall)) {
+        throw new Error("overall invalid");
+      }
 
-    // fallback rating: convert % to numericToRating if you want, or leave null
-    return { pillarScores, overall, rating: null };
-  }
-};
+      const pillarScores = {
+        E: scoredPillars.E / 100,
+        S: scoredPillars.S / 100,
+        G: scoredPillars.G / 100,
+      };
+      const overall01 = overall / 100;
 
+      return { pillarScores, overall: overall01, rating };
+    } catch (err) {
+      console.warn("[scoreAssessment] failed, using fallback:", err);
 
+      const scorePillar = (key) => {
+        const list = grouped[key] || [];
+        if (!list.length) return 0;
+
+        let totalScore = 0;
+        let answeredCount = 0;
+
+        list.forEach((q) => {
+          const ans = answers[q.qid];
+          if (!ans) return;
+
+          let numeric = 0;
+          if (typeof ans === "object" && typeof ans.score === "number") {
+            numeric = ans.score;
+          } else if (ans === "Yes") {
+            numeric = 1;
+          } else {
+            numeric = 0;
+          }
+
+          if (numeric < 0) numeric = 0;
+          if (numeric > 4) numeric = 4;
+
+          totalScore += numeric;
+          answeredCount += 1;
+        });
+
+        if (!answeredCount) return 0;
+        const maxScore = answeredCount * 4;
+        return maxScore ? totalScore / maxScore : 0;
+      };
+
+      const E = scorePillar("Environmental");
+      const S = scorePillar("Social");
+      const G = scorePillar("Governance");
+
+      const pillarScores = { E, S, G };
+      const overall = (E + S + G) / 3;
+
+      return { pillarScores, overall, rating: null };
+    }
+  };
 
   // ---------- SUBMIT ----------
-const handleSubmitAll = async () => {
-  if (!user) return;
-  setIsSubmitting(true);
+  const handleSubmitAll = async () => {
+    if (!user) return;
+    setIsSubmitting(true);
 
-  try {
-    const id = await ensureDraft();
-    console.log("[submit] draft id:", id);
-
-    const { pillarScores, overall, rating } = safeScoreAssessment();
-    console.log("[submit] scores:", pillarScores, "overall:", overall);
-
-    const critical = hasCriticalPillar(
-      pillarScores,
-      DEFAULT_CRITICAL_THRESHOLD
-    );
-    console.log("[submit] critical:", critical);
-
-    const ref = doc(db, "users", user.uid, "assessments", id);
-
-    // 🔹 Save final assessment document
     try {
-      await updateDoc(ref, {
-        answers,
-        sector,
+      const id = await ensureDraft();
+      console.log("[submit] draft id:", id);
+
+      const { pillarScores, overall, rating } = safeScoreAssessment();
+      console.log("[submit] scores:", pillarScores, "overall:", overall);
+
+      const critical = hasCriticalPillar(
         pillarScores,
-        overall,
-        rating, // keep rating
-        critical,
-        threshold: DEFAULT_CRITICAL_THRESHOLD,
-        status: "submitted",
-        updatedAt: serverTimestamp(),
-      });
-    } catch (e) {
-      console.error("[submit] updateDoc failed, trying setDoc merge:", e);
-      await setDoc(
-        ref,
-        {
+        DEFAULT_CRITICAL_THRESHOLD
+      );
+      console.log("[submit] critical:", critical);
+
+      const ref = doc(db, "users", user.uid, "assessments", id);
+
+      try {
+        await updateDoc(ref, {
           answers,
           sector,
           pillarScores,
@@ -292,66 +291,78 @@ const handleSubmitAll = async () => {
           threshold: DEFAULT_CRITICAL_THRESHOLD,
           status: "submitted",
           updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
-    }
-
-    // ✅ NEW: update user.lastAssessmentAt for dashboard reminders
-    try {
-      const userRef = doc(db, "users", user.uid);
-      await setDoc(
-        userRef,
-        { lastAssessmentAt: serverTimestamp() },
-        { merge: true }
-      );
-    } catch (err) {
-      console.error("[submit] failed to update lastAssessmentAt:", err);
-    }
-
-    // 🔹 Critical flow
-    if (critical) {
-      try {
-        const sendCriticalAlertEmail = httpsCallable(
-          functions,
-          "sendCriticalAlertEmail"
-        );
-        await sendCriticalAlertEmail({
-          user: {
-            uid: auth.currentUser?.uid || null,
-            email: auth.currentUser?.email || null,
-            displayName: auth.currentUser?.displayName || null,
-          },
-          profile: { sector },
-          scores: { ...pillarScores, overall },
-          threshold: DEFAULT_CRITICAL_THRESHOLD,
-          source: "questionnaire-submit",
-          assessmentId: id,
         });
-      } catch (err) {
-        console.error(
-          "[submit] sendCriticalAlertEmail failed (non-blocking):",
-          err
+      } catch (e) {
+        console.error("[submit] updateDoc failed, trying setDoc merge:", e);
+        await setDoc(
+          ref,
+          {
+            answers,
+            sector,
+            pillarScores,
+            overall,
+            rating,
+            critical,
+            threshold: DEFAULT_CRITICAL_THRESHOLD,
+            status: "submitted",
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
         );
       }
 
-      navigate("/critical", { replace: true });
-      return;
+      // update user.lastAssessmentAt
+      try {
+        const userRef = doc(db, "users", user.uid);
+        await setDoc(
+          userRef,
+          { lastAssessmentAt: serverTimestamp() },
+          { merge: true }
+        );
+      } catch (err) {
+        console.error("[submit] failed to update lastAssessmentAt:", err);
+      }
+
+      if (critical) {
+        try {
+          const sendCriticalAlertEmail = httpsCallable(
+            functions,
+            "sendCriticalAlertEmail"
+          );
+          await sendCriticalAlertEmail({
+            user: {
+              uid: auth.currentUser?.uid || null,
+              email: auth.currentUser?.email || null,
+              displayName: auth.currentUser?.displayName || null,
+            },
+            profile: { sector },
+            scores: { ...pillarScores, overall },
+            threshold: DEFAULT_CRITICAL_THRESHOLD,
+            source: "questionnaire-submit",
+            assessmentId: id,
+          });
+        } catch (err) {
+          console.error(
+            "[submit] sendCriticalAlertEmail failed (non-blocking):",
+            err
+          );
+        }
+
+        navigate("/critical", { replace: true });
+        return;
+      }
+
+      navigate("/dashboard", {
+        state: { assessmentId: id, sector },
+        replace: true,
+      });
+    } catch (e) {
+      console.error("[submit] unexpected error:", e);
+      alert("Submit failed. Open the console for details.");
+    } finally {
+      setIsSubmitting(false);
     }
-
-    // 🔹 Normal flow
-    navigate("/dashboard", {
-      state: { assessmentId: id, sector },
-      replace: true,
-    });
-  } catch (e) {
-    console.error("[submit] unexpected error:", e);
-    alert("Submit failed. Open the console for details.");
-  } finally {
-    setIsSubmitting(false);
-  }
-};
-
+  };
 
   // reset on sector/questions changes
   useEffect(() => {
@@ -359,31 +370,66 @@ const handleSubmitAll = async () => {
     setActive(0);
   }, [sector, questions]);
 
+  // ✅ FIX: Always go back to top when changing pillar
+  useLayoutEffect(() => {
+    // 1) scroll container if it's the scroller
+    if (pageRef.current && typeof pageRef.current.scrollTo === "function") {
+      pageRef.current.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    }
+
+    // 2) fallback: scroll document
+    const se = document.scrollingElement || document.documentElement;
+    if (se) se.scrollTop = 0;
+
+    // 3) anchor fallback
+    if (topRef.current) {
+      topRef.current.scrollIntoView({ behavior: "auto", block: "start" });
+    }
+  }, [active]);
+
   if (!user) return <div style={{ padding: 24 }}>Devi effettuare il login.</div>;
 
   // ---------- UI ----------
   return (
-    <div className="landing" style={{ alignItems: "center" }}>
+    <div ref={pageRef} className="landing" style={{ alignItems: "center" }}>
       <main className="landing__main" style={{ maxWidth: 960 }}>
+        {/* anchor for scroll-to-top */}
+        <div ref={topRef} />
+
         <h1 className="landing__title">ESG Assessment</h1>
         <p className="landing__subtitle">Sector: {sector}</p>
+{/* Tabs */}
+<div
+  style={{
+    display: "flex",
+    gap: 6,
+    margin: "16px 0",
+    overflowX: "auto",
+    WebkitOverflowScrolling: "touch",
+    padding: "0 8px",
+  }}
+>
+  {pillars.map((p, i) => (
+    <button
+      key={p}
+      className={`btn ${i === active ? "btn--primary" : "btn--ghost"}`}
+      onClick={() => setActive(i)}
+      type="button"
+      style={{
+        flex: "0 0 auto",
+        padding: "8px 10px",
+        fontSize: 13,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {p}
+      <span style={{ marginLeft: 6, opacity: 0.75 }}>
+        {progressFor(p)}%
+      </span>
+    </button>
+  ))}
+</div>
 
-        {/* Tabs */}
-        <div style={{ display: "flex", gap: 8, margin: "16px 0" }}>
-          {pillars.map((p, i) => (
-            <button
-              key={p}
-              className={`btn ${i === active ? "btn--primary" : "btn--ghost"}`}
-              onClick={() => setActive(i)}
-              type="button"
-            >
-              {p}
-              <span style={{ marginLeft: 8, opacity: 0.75 }}>
-                {progressFor(p)}%
-              </span>
-            </button>
-          ))}
-        </div>
 
         {/* Card */}
         <section
@@ -469,14 +515,23 @@ const handleSubmitAll = async () => {
 
           <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
             <button
-              className="btn btn--ghost"
-              onClick={goPrev}
-              disabled={active === 0 || isSubmitting}
-              type="button"
-            >
-              Back
-            </button>
+  className="btn btn--ghost"
+  onClick={() => {
+    if (active === 0) {
+      navigate("/dashboard", { replace: true });
+    } else {
+      goPrev();
+    }
+  }}
+  disabled={isSubmitting}
+  type="button"
+>
+  {active === 0 ? "Back to dashboard" : "Back"}
+</button>
+
+
             <div style={{ flex: 1 }} />
+
             {active < pillars.length - 1 ? (
               <button
                 className="btn btn--primary"
@@ -502,6 +557,7 @@ const handleSubmitAll = async () => {
     </div>
   );
 }
+
 
 
 

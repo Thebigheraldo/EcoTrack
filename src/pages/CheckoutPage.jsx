@@ -1,13 +1,14 @@
 // src/pages/CheckoutPage.jsx
 import React, { useState } from "react";
-import { useNavigate } from "react-router-dom";
-import TopNav from "../components/TopNav";
+import { useNavigate, useLocation } from "react-router-dom";
 import "../components/landing.css";
 import { auth, db } from "../firebase";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 
 export default function CheckoutPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -17,15 +18,16 @@ export default function CheckoutPage() {
 
     try {
       const user = auth.currentUser;
+
       if (!user) {
-        navigate("/login");
+        // preserve return path so after login user can come back here
+        navigate("/login", { state: { from: location }, replace: true });
         return;
       }
 
       const ref = doc(db, "users", user.uid);
 
-      // 🔐 Here we "fake" the payment by directly activating the subscription.
-      // In the future this will be done by Stripe webhooks, not from the client.
+      // 🔐 Fake payment: activate subscription from the client (beta only)
       await setDoc(
         ref,
         {
@@ -36,7 +38,6 @@ export default function CheckoutPage() {
         { merge: true }
       );
 
-      // After "payment" → go into the app flow
       navigate("/dashboard");
     } catch (error) {
       console.error("Error activating subscription:", error);
@@ -51,8 +52,6 @@ export default function CheckoutPage() {
 
   return (
     <div className="landing eco-landing-root">
-      <TopNav />
-
       <main className="eco-landing-main">
         <section className="eco-section eco-fade-in">
           <h1 className="eco-section-title">Complete your EcoTrack access</h1>
@@ -73,44 +72,26 @@ export default function CheckoutPage() {
               padding: 20,
             }}
           >
-            <p
-              style={{
-                fontSize: 13,
-                color: "#4b5563",
-                marginBottom: 12,
-              }}
-            >
+            <p style={{ fontSize: 13, color: "#4b5563", marginBottom: 12 }}>
               <strong>Future behaviour:</strong> this step will redirect you to
-              a Stripe checkout page to pay{" "}
-              <strong>99,99 € / year</strong> for your EcoTrack subscription.
-              After successful payment, you will be sent back here and your
-              subscription will be activated automatically.
+              a Stripe checkout page to pay <strong>99,99 € / year</strong> for
+              your EcoTrack subscription. After successful payment, you will be
+              sent back here and your subscription will be activated automatically.
             </p>
 
-            <p
-              style={{
-                fontSize: 13,
-                color: "#6b7280",
-                marginBottom: 12,
-              }}
-            >
+            <p style={{ fontSize: 13, color: "#6b7280", marginBottom: 12 }}>
               <strong>Current beta behaviour:</strong> click the button below to
               activate your access and continue using EcoTrack without payment.
             </p>
 
             {err && (
-              <p
-                style={{
-                  color: "#b91c1c",
-                  marginBottom: 8,
-                  fontSize: 13,
-                }}
-              >
+              <p style={{ color: "#b91c1c", marginBottom: 8, fontSize: 13 }}>
                 {err}
               </p>
             )}
 
             <button
+              type="button"
               onClick={handleActivate}
               className="eco-btn-primary"
               disabled={busy}

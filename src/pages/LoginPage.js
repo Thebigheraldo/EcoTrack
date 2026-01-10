@@ -1,23 +1,29 @@
-// src/pages/LoginPage.jsx
 import React, { useState } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate, useLocation, Link } from "react-router-dom";
 import {
   signInWithEmailAndPassword,
   sendPasswordResetEmail,
 } from "firebase/auth";
 import { auth, db } from "../firebase";
 import { doc, getDoc } from "firebase/firestore";
-import "../components/landing.css"; // reuse styles for buttons/layout
+import "../components/landing.css";
+
+function isSubscriptionActive(subscriptionStatus) {
+  // Adatta a come vuoi gestire i piani
+  return subscriptionStatus === "active" || subscriptionStatus === "trialing";
+}
 
 export default function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
+
+  // dove voleva andare l’utente prima di essere rimandato al login
   const from = location.state?.from?.pathname || "/dashboard";
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
-  const [info, setInfo] = useState(""); // success / info messages
+  const [info, setInfo] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function handleLogin(e) {
@@ -35,41 +41,51 @@ export default function LoginPage() {
       );
       const uid = cred.user.uid;
 
-      // 2) Load user doc (role + onboarding flag)
+      // 2) Load user doc (role + onboarding + subscription)
       let role = "user";
       let onboardingCompleted = false;
+      let subscriptionStatus = "inactive";
 
       try {
         const ref = doc(db, "users", uid);
         const snap = await getDoc(ref);
+
         if (snap.exists()) {
           const data = snap.data();
           role = data.role || "user";
           onboardingCompleted = !!data.onboardingCompleted;
+          subscriptionStatus = data.subscriptionStatus || "inactive";
         }
-      } catch (err) {
-        console.error("Error reading user doc on login", err);
-        // fall back to defaults: role "user", onboardingCompleted false
+      } catch (e) {
+        console.error("Error reading user doc on login", e);
+        // fallback safe: treat as non-subscribed
       }
 
       // 3) Routing logic
       if (role === "admin") {
-        // this account is pure admin → go straight to admin dashboard
         navigate("/admin", { replace: true });
-      } else {
-        // 🔁 PRIMA:
-        // } else if (!onboardingCompleted) {
-        //   navigate("/onboarding", { replace: true });
-        // } else {
-        //   navigate(from, { replace: true });
-        // }
-        //
-        // ORA: tutti i normali utenti vanno alla pagina pricing
-        navigate("/pricing", { replace: true });
+        return;
       }
+
+      const active = isSubscriptionActive(subscriptionStatus);
+
+      // Se non è attivo → pricing
+      if (!active) {
+        navigate("/pricing", { replace: true, state: { from: { pathname: from } } });
+        return;
+      }
+
+      // Se è attivo ma non ha completato onboarding → onboarding
+      if (!onboardingCompleted) {
+        navigate("/onboarding", { replace: true });
+        return;
+      }
+
+      // Utente attivo + onboarded → torna dove voleva andare (o dashboard)
+      navigate(from, { replace: true });
     } catch (e) {
       console.error(e);
-      setErr(e.message || "Login failed");
+      setErr(e?.message || "Login failed");
     } finally {
       setBusy(false);
     }
@@ -88,12 +104,10 @@ export default function LoginPage() {
     setBusy(true);
     try {
       await sendPasswordResetEmail(auth, trimmedEmail);
-      setInfo(
-        "Password reset email sent. Check your inbox (and spam folder)."
-      );
+      setInfo("Password reset email sent. Check your inbox (and spam folder).");
     } catch (e) {
       console.error(e);
-      setErr(e.message || "Failed to send password reset email.");
+      setErr(e?.message || "Failed to send password reset email.");
     } finally {
       setBusy(false);
     }
@@ -114,6 +128,7 @@ export default function LoginPage() {
             className="w-full rounded-xl"
             style={inputStyle}
             required
+            autoComplete="email"
           />
           <input
             type="password"
@@ -123,7 +138,9 @@ export default function LoginPage() {
             className="w-full rounded-xl"
             style={inputStyle}
             required
+            autoComplete="current-password"
           />
+
           <button
             className="btn btn--primary"
             style={{ width: "100%", marginTop: 8 }}
@@ -134,7 +151,6 @@ export default function LoginPage() {
           </button>
         </form>
 
-        {/* Forgot password button */}
         <div style={{ marginTop: 10, textAlign: "center" }}>
           <button
             type="button"
@@ -158,14 +174,15 @@ export default function LoginPage() {
           </p>
         )}
 
+        {/* Niente "Sign up" qui: funnel a pagamento → manda ai piani */}
         <p className="landing__subtitle" style={{ marginTop: 14 }}>
-          No account?{" "}
-          <a
-            href="/esg-assessment/signup"
+          First time here?{" "}
+          <Link
+            to="/pricing"
             style={{ color: "#059669", textDecoration: "underline" }}
           >
-            Sign up
-          </a>
+            See plans & subscribe
+          </Link>
         </p>
       </main>
     </div>
@@ -180,5 +197,6 @@ const inputStyle = {
   outline: "none",
   marginTop: 8,
 };
+
 
 

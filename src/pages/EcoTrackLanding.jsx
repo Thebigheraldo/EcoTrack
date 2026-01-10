@@ -1,22 +1,17 @@
 // src/pages/EcoTrackLanding.jsx
 import React from "react";
 import { useNavigate, Link } from "react-router-dom";
-import TopNav from "../components/TopNav";
 import "../components/landing.css";
 
 export default function EcoTrackLanding() {
   const navigate = useNavigate();
 
   const handleStartClick = () => {
-    // For now, always go to signup.
-    // Later we can add: if logged in + subscribed -> dashboard, etc.
     navigate("/signup");
   };
 
   return (
     <div className="landing eco-landing-root">
-      <TopNav />
-
       <main className="eco-landing-main">
         {/* HERO */}
         <section className="eco-hero eco-fade-in">
@@ -39,7 +34,7 @@ export default function EcoTrackLanding() {
             </p>
 
             <div className="eco-hero-cta-row">
-              <button onClick={handleStartClick} className="eco-btn-primary">
+              <button onClick={handleStartClick} className="eco-btn-primary" type="button">
                 Start EcoTrack
               </button>
 
@@ -273,7 +268,7 @@ export default function EcoTrackLanding() {
               today — and what to improve next.
             </p>
           </div>
-          <button onClick={handleStartClick} className="eco-btn-primary">
+          <button onClick={handleStartClick} className="eco-btn-primary" type="button">
             Start EcoTrack
           </button>
         </section>
@@ -281,4 +276,5 @@ export default function EcoTrackLanding() {
     </div>
   );
 }
+
 

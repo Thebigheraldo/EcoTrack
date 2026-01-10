@@ -1,6 +1,6 @@
 // src/pages/SignupPage.jsx
-import React, { useEffect, useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate, Link, useLocation } from "react-router-dom";
 import {
   onAuthStateChanged,
   createUserWithEmailAndPassword,
@@ -12,14 +12,21 @@ import { auth, db } from "../firebase";
 import "../components/landing.css";
 
 export default function SignupPage() {
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  // ✅ Se arrivi da pricing con state.from = /checkout, qui lo prendi
+  const targetPath = useMemo(() => {
+    return location.state?.from?.pathname || "/checkout";
+  }, [location.state]);
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const [user, setUser] = useState(null); // ⬅️ utente attuale (se già loggato)
-  const [hideLoggedBanner, setHideLoggedBanner] = useState(false); // ⬅️ NEW
-  const navigate = useNavigate();
+  const [user, setUser] = useState(null);
+  const [hideLoggedBanner, setHideLoggedBanner] = useState(false);
 
   // Solo osserva lo stato: NIENTE redirect automatico
   useEffect(() => {
@@ -31,38 +38,37 @@ export default function SignupPage() {
     e.preventDefault();
     setErr("");
 
-    if (!email.trim()) {
-      return setErr("Inserisci l’email.");
-    }
-    if (password.length < 6) {
-      return setErr("Password almeno 6 caratteri.");
-    }
+    const trimmedEmail = email.trim();
+    const trimmedName = name.trim();
 
-    // ⬇️ evita il lampo del banner "sei già loggato" durante la registrazione
+    if (!trimmedEmail) return setErr("Inserisci l’email.");
+    if (password.length < 6) return setErr("Password almeno 6 caratteri.");
+
+    // evita il lampo del banner durante la registrazione
     setHideLoggedBanner(true);
 
     setBusy(true);
     try {
       const cred = await createUserWithEmailAndPassword(
         auth,
-        email.trim(),
+        trimmedEmail,
         password
       );
 
-      if (name.trim()) {
-        await updateProfile(cred.user, { displayName: name.trim() }).catch(
+      if (trimmedName) {
+        await updateProfile(cred.user, { displayName: trimmedName }).catch(
           () => {}
         );
       }
 
-      // scrivi Firestore in background (non blocca redirect)
+      // Firestore (non bloccare)
       setDoc(
         doc(db, "users", cred.user.uid),
         {
           uid: cred.user.uid,
           email: cred.user.email,
-          name: name.trim() || "",
-          role: "user", // ruolo di default
+          name: trimmedName || "",
+          role: "user",
           onboardingCompleted: false,
           subscriptionStatus: "none",
           subscriptionPlan: null,
@@ -72,7 +78,8 @@ export default function SignupPage() {
         { merge: true }
       ).catch(() => {});
 
-      navigate("/pricing", { replace: true });
+      // ✅ FIX: dopo signup vai dove dovevi andare (di default /checkout)
+      navigate(targetPath, { replace: true });
     } catch (e) {
       const map = {
         "auth/email-already-in-use": "Email già registrata.",
@@ -80,7 +87,6 @@ export default function SignupPage() {
         "auth/weak-password": "Password troppo debole.",
       };
       setErr(map[e.code] || e.message || "Registrazione fallita.");
-      // se fallisce, puoi ri-mostrare il banner
       setHideLoggedBanner(false);
     } finally {
       setBusy(false);
@@ -91,6 +97,7 @@ export default function SignupPage() {
     try {
       await signOut(auth);
       setUser(null);
+      // dopo logout resta su signup (così può creare un nuovo account)
     } catch (e) {
       setErr(e.message);
     }
@@ -104,7 +111,7 @@ export default function SignupPage() {
           Save progress and export reports anytime.
         </p>
 
-        {/* Se già loggato: mostra banner di scelta (ma non durante signup in corso) */}
+        {/* Se già loggato: scelta (ma non durante signup in corso) */}
         {user && !hideLoggedBanner && (
           <div
             style={{
@@ -119,14 +126,17 @@ export default function SignupPage() {
             Sei già loggato come <strong>{user.email}</strong>.
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
               <button
+                type="button"
                 className="btn btn--primary"
-                onClick={() =>
-                  navigate("/pricing", { replace: true })
-                }
+                onClick={() => navigate(targetPath, { replace: true })}
               >
-                Continua alla pagina pricing
+                Continua
               </button>
-              <button className="btn btn--ghost" onClick={handleLogout}>
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={handleLogout}
+              >
                 Esci per creare un nuovo account
               </button>
             </div>
@@ -163,6 +173,7 @@ export default function SignupPage() {
             autoComplete="new-password"
             minLength={6}
           />
+
           <button
             className="btn btn--primary"
             style={{ width: "100%", marginTop: 8 }}
@@ -183,6 +194,7 @@ export default function SignupPage() {
           Already have an account?{" "}
           <Link
             to="/login"
+            state={{ from: { pathname: targetPath } }}
             style={{ color: "#059669", textDecoration: "underline" }}
           >
             Log in
@@ -201,4 +213,5 @@ const inputStyle = {
   outline: "none",
   marginTop: 8,
 };
+
 

@@ -20,6 +20,8 @@ import {
 import { getTailoredSuggestions } from "../utils/suggestionEngine";
 import { getQuestionsForSector } from "../utils/questions";
 import "../components/landing.css";
+import ecoTrackLogo from "../assets/ecotrack-logo.png";
+
 
 // Unified button for starting a new assessment
 import NewAssessmentButton from "../components/NewAssessmentButton";
@@ -86,6 +88,53 @@ function formatDateISO(d) {
   } catch {
     return "—";
   }
+}
+
+/* ---------- Date helpers (planner) ---------- */
+
+function addDays(date, n) {
+  const d = new Date(date);
+  d.setDate(d.getDate() + n);
+  return d;
+}
+
+// Monday-based week start (Europe-friendly)
+function getWeekStartMonday(d = new Date()) {
+  const date = new Date(d);
+  const day = date.getDay(); // Sun=0 .. Sat=6
+  const diff = day === 0 ? -6 : 1 - day;
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() + diff);
+  return date;
+}
+
+function getNextWeeks(count = 4, fromDate = new Date()) {
+  const start = getWeekStartMonday(fromDate);
+  return Array.from({ length: count }, (_, i) => {
+    const weekStart = addDays(start, i * 7);
+    const weekEnd = addDays(weekStart, 6);
+    return { weekStart, weekEnd, key: formatDateISO(weekStart) };
+  });
+}
+
+function isISODateInRange(iso, startDate, endDate) {
+  if (!iso) return false;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return false;
+  const s = new Date(startDate);
+  const e = new Date(endDate);
+  s.setHours(0, 0, 0, 0);
+  e.setHours(23, 59, 59, 999);
+  return d >= s && d <= e;
+}
+
+// Count OPEN (not completed) scheduled items inside a week range
+function countOpenScheduledInWeek(items, weekStart, weekEnd) {
+  return items.filter((i) => {
+    if (i.completed) return false;
+    const iso = i.scheduledFor ? String(i.scheduledFor) : "";
+    return isISODateInRange(iso, weekStart, weekEnd);
+  }).length;
 }
 
 /* ---------- Normalization helpers ---------- */
@@ -273,13 +322,9 @@ function inferMetaFromTags(baseImpact, baseEffort, baseTimeframe, rawTags) {
 
   // ---- Timeframe ----
   if (!baseTimeframe) {
-    if (effort === "Low") {
-      timeframe = "0–6 months";
-    } else if (effort === "Medium") {
-      timeframe = "6–12 months";
-    } else {
-      timeframe = "12+ months";
-    }
+    if (effort === "Low") timeframe = "0–6 months";
+    else if (effort === "Medium") timeframe = "6–12 months";
+    else timeframe = "12+ months";
   }
 
   return { impact, effort, timeframe };
@@ -326,6 +371,10 @@ export default function SuggestionsPage() {
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState("recommend");
 
+  // Planner controls
+  const [planHorizon, setPlanHorizon] = useState("4w"); // "4w" | "8w"
+  const weeksToShow = planHorizon === "8w" ? 8 : 4;
+
   /* ---------- Load profile + assessments ---------- */
 
   useEffect(() => {
@@ -350,8 +399,7 @@ export default function SuggestionsPage() {
       const snaps = await getDocs(qy);
       const docs = snaps.docs.map((d) => ({ id: d.id, ...d.data() }));
 
-      const chosen =
-        docs.find((d) => d.status === "submitted") || docs[0] || null;
+      const chosen = docs.find((d) => d.status === "submitted") || docs[0] || null;
 
       if (chosen) {
         const chosenSector = chosen.sector || profileSector || "";
@@ -419,8 +467,6 @@ export default function SuggestionsPage() {
 
     const enriched = list.map((s, idx) => {
       const pillar = inferPillarFromSuggestion(s);
-
-      // Heuristic meta from tags if not explicitly set
       const { impact, effort, timeframe } = inferMetaFromTags(
         s.impact,
         s.effort,
@@ -480,9 +526,7 @@ export default function SuggestionsPage() {
     let list = [...suggestions];
 
     if (filterPillar) {
-      list = list.filter(
-        (s) => (s.pillar || "").toUpperCase() === filterPillar
-      );
+      list = list.filter((s) => (s.pillar || "").toUpperCase() === filterPillar);
     }
     if (filterImpact) {
       list = list.filter(
@@ -499,10 +543,8 @@ export default function SuggestionsPage() {
       list = list.filter((s) => {
         const tf = (s.timeframe || "").toLowerCase();
         if (key === "quick") return tf.includes("quick");
-        if (key === "0–6" || key === "0-6")
-          return tf.includes("0–6") || tf.includes("0-6");
-        if (key === "6–12" || key === "6-12")
-          return tf.includes("6–12") || tf.includes("6-12");
+        if (key === "0–6" || key === "0-6") return tf.includes("0–6") || tf.includes("0-6");
+        if (key === "6–12" || key === "6-12") return tf.includes("6–12") || tf.includes("6-12");
         if (key === "12") return tf.includes("12");
         return true;
       });
@@ -523,12 +565,8 @@ export default function SuggestionsPage() {
       effort === "Low" ? 3 : effort === "Medium" ? 2 : effort === "High" ? 1 : 0;
 
     list.sort((a, b) => {
-      if (sortBy === "impact") {
-        return impactRank(b.impact) - impactRank(a.impact);
-      }
-      if (sortBy === "effort") {
-        return effortRank(b.effort) - effortRank(a.effort);
-      }
+      if (sortBy === "impact") return impactRank(b.impact) - impactRank(a.impact);
+      if (sortBy === "effort") return effortRank(b.effort) - effortRank(a.effort);
       if (sortBy === "az") {
         const ta = (a.title || a.text || "").toLowerCase();
         const tb = (b.title || b.text || "").toLowerCase();
@@ -539,20 +577,11 @@ export default function SuggestionsPage() {
     });
 
     return list;
-  }, [
-    suggestions,
-    filterPillar,
-    filterImpact,
-    filterEffort,
-    filterTimeframe,
-    search,
-    sortBy,
-  ]);
+  }, [suggestions, filterPillar, filterImpact, filterEffort, filterTimeframe, search, sortBy]);
 
   /* ---------- Action plan helpers ---------- */
 
-  const isInPlan = (suggestion) =>
-    actionPlan.some((item) => item.suggestionId === suggestion.id);
+  const isInPlan = (suggestion) => actionPlan.some((item) => item.suggestionId === suggestion.id);
 
   const handleAddToPlan = async (suggestion) => {
     if (!userId) return;
@@ -561,8 +590,7 @@ export default function SuggestionsPage() {
     setPlanError("");
 
     const text =
-      suggestion.text ||
-      (typeof suggestion === "string" ? suggestion : "Action item");
+      suggestion.text || (typeof suggestion === "string" ? suggestion : "Action item");
 
     const payload = {
       suggestionId: suggestion.id,
@@ -572,7 +600,7 @@ export default function SuggestionsPage() {
       effort: normalizeEffort(suggestion.effort),
       timeframe: normalizeTimeframe(suggestion.timeframe),
       completed: false,
-      inSprint: false, // new flag, default false
+      scheduledFor: null, // planner field (ISO date string)
       createdAt: new Date(),
     };
 
@@ -595,11 +623,7 @@ export default function SuggestionsPage() {
       await updateDoc(doc(db, "users", userId, "actionPlan", item.id), {
         completed: newCompleted,
       });
-      setActionPlan((prev) =>
-        prev.map((p) =>
-          p.id === item.id ? { ...p, completed: newCompleted } : p
-        )
-      );
+      setActionPlan((prev) => prev.map((p) => (p.id === item.id ? { ...p, completed: newCompleted } : p)));
     } catch (e) {
       console.error("Error updating action plan item", e);
       setPlanError(e.message || "Failed to update action plan.");
@@ -628,37 +652,22 @@ export default function SuggestionsPage() {
     }
     setPlanError("");
 
-    const impactRank = (impact) =>
-      impact === "High" ? 3 : impact === "Medium" ? 2 : 1;
+    const impactRank = (impact) => (impact === "High" ? 3 : impact === "Medium" ? 2 : 1);
 
-    // Prefer non-compliance suggestions (E/S focus) for quick wins
     let pool = suggestions.filter((s) => !isComplianceSuggestion(s));
+    if (!pool.length) pool = [...suggestions];
 
-    // Fallback: if everything is governance/compliance, use all suggestions
-    if (!pool.length) {
-      pool = [...suggestions];
-    }
+    let quick = pool.filter((s) => normalizeEffort(s.effort) === "Low");
 
-    // 1) prefer low-effort
-    let quick = pool.filter(
-      (s) => normalizeEffort(s.effort) === "Low"
-    );
-
-    // 2) fallback: medium effort + high impact
     if (!quick.length) {
       quick = pool.filter(
-        (s) =>
-          normalizeEffort(s.effort) === "Medium" &&
-          normalizeImpact(s.impact) === "High"
+        (s) => normalizeEffort(s.effort) === "Medium" && normalizeImpact(s.impact) === "High"
       );
     }
 
-    // 3) final fallback: top by impact from pool
     if (!quick.length) {
       quick = [...pool].sort(
-        (a, b) =>
-          impactRank(normalizeImpact(b.impact)) -
-          impactRank(normalizeImpact(a.impact))
+        (a, b) => impactRank(normalizeImpact(b.impact)) - impactRank(normalizeImpact(a.impact))
       );
     }
 
@@ -670,6 +679,7 @@ export default function SuggestionsPage() {
 
     for (const s of quick) {
       if (!isInPlan(s)) {
+        // eslint-disable-next-line no-await-in-loop
         await handleAddToPlan(s);
       }
     }
@@ -682,36 +692,27 @@ export default function SuggestionsPage() {
     }
     setPlanError("");
 
-    const impactRank = (impact) =>
-      impact === "High" ? 3 : impact === "Medium" ? 2 : 1;
+    const impactRank = (impact) => (impact === "High" ? 3 : impact === "Medium" ? 2 : 1);
 
-    // Focus on governance/compliance suggestions
     let compl = suggestions.filter((s) => isComplianceSuggestion(s));
-
-    // Fallback: if nothing is tagged, use all G-pillar suggestions
     if (!compl.length) {
-      compl = suggestions.filter(
-        (s) => (s.pillar || "").toUpperCase() === "G"
-      );
+      compl = suggestions.filter((s) => (s.pillar || "").toUpperCase() === "G");
     }
 
     compl = compl
       .sort(
-        (a, b) =>
-          impactRank(normalizeImpact(b.impact)) -
-          impactRank(normalizeImpact(a.impact))
+        (a, b) => impactRank(normalizeImpact(b.impact)) - impactRank(normalizeImpact(a.impact))
       )
       .slice(0, 5);
 
     if (!compl.length) {
-      setPlanError(
-        "Couldn't find suggestions tagged as governance/compliance."
-      );
+      setPlanError("Couldn't find suggestions tagged as governance/compliance.");
       return;
     }
 
     for (const s of compl) {
       if (!isInPlan(s)) {
+        // eslint-disable-next-line no-await-in-loop
         await handleAddToPlan(s);
       }
     }
@@ -722,205 +723,506 @@ export default function SuggestionsPage() {
   const currentOverall = assessmentMeta?.overall ?? null;
 
   const estimatedImpact = useMemo(() => {
-    if (!actionPlan.length) {
-      return { overallDelta: 0, futureOverall: currentOverall ?? null };
-    }
+    if (!actionPlan.length) return { overallDelta: 0, futureOverall: currentOverall ?? null };
 
-    const impactScore = (impact) =>
-      impact === "High" ? 3 : impact === "Medium" ? 2 : 1;
+    const impactScore = (impact) => (impact === "High" ? 3 : impact === "Medium" ? 2 : 1);
 
     const totalImpact = actionPlan.reduce(
-      (sum, item) =>
-        sum + impactScore(normalizeImpact(item.impact || "Medium")),
+      (sum, item) => sum + impactScore(normalizeImpact(item.impact || "Medium")),
       0
     );
 
     const delta = Math.min(20, Math.round(totalImpact * 1.5));
     const future =
-      typeof currentOverall === "number"
-        ? Math.min(100, currentOverall + delta)
-        : null;
+      typeof currentOverall === "number" ? Math.min(100, currentOverall + delta) : null;
 
     return { overallDelta: delta, futureOverall: future };
   }, [actionPlan, currentOverall]);
 
-  /* ---------- Export Action Plan PDF ---------- */
+  /* ---------- Planner (auto weekly plan) ---------- */
 
-  const handleExportPlanPDF = () => {
-    if (!actionPlan.length) return;
-
-    const pdf = new jsPDF({ unit: "pt", format: "a4" });
-    const PAGE = {
-      w: pdf.internal.pageSize.getWidth(),
-      h: pdf.internal.pageSize.getHeight(),
-      l: 56,
-      r: 56,
-      t: 64,
-    };
-
-    pdf.setFontSize(18);
-    pdf.text("EcoTrack – ESG Action Plan", PAGE.l, PAGE.t);
-    pdf.setFontSize(11);
-    pdf.text(`Organization: ${userName || "-"}`, PAGE.l, PAGE.t + 20);
-    pdf.text(`Sector: ${sector || "-"}`, PAGE.l, PAGE.t + 36);
-    pdf.text(
-      `Generated: ${new Date().toLocaleString()}`,
-      PAGE.l,
-      PAGE.t + 52
-    );
-
-    const rows = actionPlan.map((item, idx) => [
-      idx + 1,
-      item.text || "",
-      normalizeImpact(item.impact),
-      normalizeEffort(item.effort),
-      normalizeTimeframe(item.timeframe),
-      item.completed ? "Done" : "Planned",
-    ]);
-
-    autoTable(pdf, {
-      startY: PAGE.t + 70,
-      head: [["#", "Action", "Impact", "Effort", "Timeframe", "Status"]],
-      body: rows.length ? rows : [["-", "-", "-", "-", "-", "-"]],
-      styles: { fontSize: 10, cellPadding: 5, lineHeight: 1.2 },
-      headStyles: { fillColor: [20, 138, 88], textColor: 255 },
-      theme: "striped",
-      margin: { left: PAGE.l, right: PAGE.r },
-      columnStyles: {
-        0: { cellWidth: 24 },
-        1: { cellWidth: PAGE.w - PAGE.l - PAGE.r - 220 },
-        2: { cellWidth: 60 },
-        3: { cellWidth: 60 },
-        4: { cellWidth: 80 },
-        5: { cellWidth: 60 },
-      },
-    });
-
-    const fileName = `EcoTrack_ActionPlan_${new Date()
-      .toISOString()
-      .slice(0, 10)}.pdf`;
-    pdf.save(fileName);
+  const priorityScore = (item) => {
+    const impact = normalizeImpact(item.impact);
+    const effort = normalizeEffort(item.effort);
+    const impactRank = impact === "High" ? 3 : impact === "Medium" ? 2 : 1;
+    const effortRank = effort === "Low" ? 3 : effort === "Medium" ? 2 : 1; // low effort => higher
+    return impactRank * 10 + effortRank;
   };
 
-  /* ---------- Action Sprint helpers ---------- */
-
-  const handleStartSprint = async () => {
+  // STRICT 1/week: only fills EMPTY weeks, only for currently unscheduled open items.
+  const handleGenerateSchedule = async () => {
     if (!userId) return;
     setPlanError("");
 
     const openItems = actionPlan.filter((i) => !i.completed);
 
-    if (!openItems.length) {
-      setPlanError("You have no open actions to start a Sprint.");
+    const candidates = openItems
+      .filter((i) => !i.scheduledFor || String(i.scheduledFor).trim() === "")
+      .sort((a, b) => priorityScore(b) - priorityScore(a));
+
+    if (!candidates.length) {
+      setPlanError("All open actions are already scheduled.");
       return;
     }
 
-    const impactRank = (impact) => {
-      const v = normalizeImpact(impact);
-      return v === "High" ? 3 : v === "Medium" ? 2 : 1;
-    };
+    const weeks = getNextWeeks(weeksToShow, new Date());
+    const assignments = new Map(); // itemId -> ISO date
+    let cursor = 0;
 
-    const effortRank = (effort) => {
-      const v = normalizeEffort(effort);
-      // low effort = higher priority
-      return v === "Low" ? 3 : v === "Medium" ? 2 : 1;
-    };
+    for (const w of weeks) {
+      const alreadyHasOne = countOpenScheduledInWeek(openItems, w.weekStart, w.weekEnd) >= 1;
+      if (alreadyHasOne) continue;
+      if (cursor >= candidates.length) break;
 
-    const candidates = [...openItems].sort((a, b) => {
-      const scoreA = impactRank(a.impact) * 10 + effortRank(a.effort);
-      const scoreB = impactRank(b.impact) * 10 + effortRank(b.effort);
-      return scoreB - scoreA;
-    });
+      const item = candidates[cursor];
+      cursor += 1;
 
-    const selected = candidates.slice(0, 5); // up to 5 actions
-    if (!selected.length) {
-      setPlanError("Could not assemble a Sprint from your current actions.");
+      const iso = formatDateISO(addDays(w.weekStart, 0)); // Monday
+      assignments.set(item.id, iso);
+    }
+
+    if (!assignments.size) {
+      setPlanError(
+        "No weeks available: each upcoming week already has an open scheduled action. Use Regenerate to enforce 1/week."
+      );
       return;
     }
 
-    const selectedIds = new Set(selected.map((i) => i.id));
-
-    // Local state
     setActionPlan((prev) =>
-      prev.map((item) => ({
-        ...item,
-        inSprint: selectedIds.has(item.id),
-      }))
+      prev.map((it) =>
+        assignments.has(it.id) ? { ...it, scheduledFor: assignments.get(it.id) } : it
+      )
     );
 
-    // Persist in Firestore
     try {
-      const updates = actionPlan.map((item) => {
-        const inSprint = selectedIds.has(item.id);
-        const ref = doc(db, "users", userId, "actionPlan", item.id);
-        return updateDoc(ref, { inSprint });
-      });
-      await Promise.all(updates);
+      await Promise.all(
+        Array.from(assignments.entries()).map(([itemId, iso]) =>
+          updateDoc(doc(db, "users", userId, "actionPlan", itemId), { scheduledFor: iso })
+        )
+      );
+
+      const remaining = candidates.length - assignments.size;
+      if (remaining > 0) {
+        setPlanError(
+          `Scheduled ${assignments.size} actions (1/week). ${remaining} remain unscheduled — increase horizon to schedule more weeks.`
+        );
+      }
     } catch (e) {
-      console.error("Error starting Sprint", e);
-      setPlanError(e.message || "Failed to start Action Sprint.");
+      console.error("Error generating schedule", e);
+      setPlanError(e.message || "Failed to generate schedule.");
     }
   };
 
-  const handleClearSprint = async () => {
+  // ENFORCE 1/week: overwrites schedules for ALL open items.
+  const handleRegenerateSchedule = async () => {
     if (!userId) return;
     setPlanError("");
 
-    const sprintDocs = actionPlan.filter((i) => i.inSprint);
-    if (!sprintDocs.length) return;
+    const openItems = actionPlan.filter((i) => !i.completed);
+    if (!openItems.length) {
+      setPlanError("No open actions to schedule.");
+      return;
+    }
 
+    const weeks = getNextWeeks(weeksToShow, new Date());
+    const sorted = [...openItems].sort((a, b) => priorityScore(b) - priorityScore(a));
+
+    // Build a strict assignment: max 1 per week
+    const assignments = new Map(); // itemId -> ISO date | null
+    let cursor = 0;
+
+    for (const w of weeks) {
+      if (cursor >= sorted.length) break;
+      const item = sorted[cursor];
+      cursor += 1;
+
+      const iso = formatDateISO(addDays(w.weekStart, 0)); // Monday
+      assignments.set(item.id, iso);
+    }
+
+    // Everyone else becomes unscheduled (null)
+    for (let i = cursor; i < sorted.length; i += 1) {
+      assignments.set(sorted[i].id, null);
+    }
+
+    // Optimistic local update (only open items overwritten)
     setActionPlan((prev) =>
-      prev.map((item) => ({
-        ...item,
-        inSprint: false,
-      }))
+      prev.map((it) => {
+        if (it.completed) return it;
+        if (!assignments.has(it.id)) return { ...it, scheduledFor: null };
+        return { ...it, scheduledFor: assignments.get(it.id) };
+      })
     );
 
     try {
-      const updates = sprintDocs.map((item) => {
-        const ref = doc(db, "users", userId, "actionPlan", item.id);
-        return updateDoc(ref, { inSprint: false });
-      });
-      await Promise.all(updates);
+      await Promise.all(
+        Array.from(assignments.entries()).map(([itemId, iso]) =>
+          updateDoc(doc(db, "users", userId, "actionPlan", itemId), { scheduledFor: iso })
+        )
+      );
+
+      const scheduledCount = Array.from(assignments.values()).filter(Boolean).length;
+      const remaining = openItems.length - scheduledCount;
+      if (remaining > 0) {
+        setPlanError(
+          `Regenerated schedule (strict 1/week). Scheduled ${scheduledCount}. ${remaining} remain unscheduled — increase horizon to schedule more weeks.`
+        );
+      }
     } catch (e) {
-      console.error("Error clearing Sprint", e);
-      setPlanError(e.message || "Failed to clear Action Sprint.");
+      console.error("Error regenerating schedule", e);
+      setPlanError(e.message || "Failed to regenerate schedule.");
     }
   };
+
+  const handleClearSchedule = async () => {
+    if (!userId) return;
+    setPlanError("");
+
+    const itemsWithSchedule = actionPlan.filter((i) => i.scheduledFor);
+    if (!itemsWithSchedule.length) return;
+
+    // Optimistic local update
+    setActionPlan((prev) => prev.map((it) => ({ ...it, scheduledFor: null })));
+
+    try {
+      await Promise.all(
+        itemsWithSchedule.map((item) =>
+          updateDoc(doc(db, "users", userId, "actionPlan", item.id), { scheduledFor: null })
+        )
+      );
+    } catch (e) {
+      console.error("Error clearing schedule", e);
+      setPlanError(e.message || "Failed to clear schedule.");
+    }
+  };
+
+  /* ---------- Export Action Plan PDF ---------- */
+
+/* ---------- Export Action Plan PDF (PRO + LOGO) ---------- */
+
+const handleExportPlanPDF = async () => {
+  if (!actionPlan.length) return;
+
+  // ---- Helpers (local) ----
+  const BRAND = {
+    green: [20, 138, 88],
+    dark: [15, 23, 42],
+    muted: [100, 116, 139],
+    line: [226, 232, 240],
+    bg: [248, 250, 252],
+  };
+
+  const safeText = (v) => (v == null ? "" : String(v));
+
+  const fetchAsDataURL = async (url) => {
+    const res = await fetch(url);
+    const blob = await res.blob();
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  };
+
+  const formatISOShort = (iso) => {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return safeText(iso);
+    return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
+  };
+
+  const completion = (() => {
+    const total = actionPlan.length;
+    const done = actionPlan.filter((i) => i.completed).length;
+    const open = total - done;
+    const pct = total ? Math.round((done / total) * 100) : 0;
+    return { total, done, open, pct };
+  })();
+
+  const scheduledOpen = actionPlan
+    .filter((i) => !i.completed && i.scheduledFor)
+    .slice()
+    .sort((a, b) => String(a.scheduledFor).localeCompare(String(b.scheduledFor)));
+
+  const unscheduledOpen = actionPlan
+    .filter((i) => !i.completed && (!i.scheduledFor || String(i.scheduledFor).trim() === ""))
+    .slice()
+    .sort((a, b) => {
+      const impactRank = (x) => (normalizeImpact(x) === "High" ? 3 : normalizeImpact(x) === "Medium" ? 2 : 1);
+      const effortRank = (x) => (normalizeEffort(x) === "Low" ? 3 : normalizeEffort(x) === "Medium" ? 2 : 1);
+      const score = (it) => impactRank(it.impact) * 10 + effortRank(it.effort);
+      return score(b) - score(a);
+    });
+
+  // ---- Build PDF ----
+  const pdf = new jsPDF({ unit: "pt", format: "a4" });
+
+  const PAGE = {
+    w: pdf.internal.pageSize.getWidth(),
+    h: pdf.internal.pageSize.getHeight(),
+    l: 56,
+    r: 56,
+    t: 56,
+    b: 46,
+  };
+
+  // ---- Load logo as DataURL (safe) ----
+  let logoDataUrl = null;
+  try {
+    logoDataUrl = await fetchAsDataURL(ecoTrackLogo);
+  } catch (e) {
+    console.warn("Logo load failed, continuing without logo.", e);
+    logoDataUrl = null;
+  }
+
+  const drawHeader = () => {
+    // Top brand bar
+    pdf.setFillColor(...BRAND.green);
+    pdf.rect(0, 0, PAGE.w, 64, "F");
+
+    // Title (left)
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(18);
+    pdf.setTextColor(255, 255, 255);
+    pdf.text("EcoTrack — ESG Action Plan", PAGE.l, 40);
+
+    // Logo (top-right, inside bar)
+    if (logoDataUrl) {
+      try {
+        const props = pdf.getImageProperties(logoDataUrl);
+        const logoH = 28; // <- cambia se lo vuoi più grande/piccolo
+        const logoW = (props.width / props.height) * logoH;
+        const x = PAGE.w - PAGE.r - logoW;
+        const y = 18; // dentro la barra verde (altezza 64)
+        pdf.addImage(logoDataUrl, "PNG", x, y, logoW, logoH, undefined, "FAST");
+      } catch (e) {
+        console.warn("addImage failed, continuing without logo.", e);
+      }
+    }
+
+    // Meta card (white)
+    const cardY = 78;
+    const cardH = 86;
+
+    pdf.setFillColor(255, 255, 255);
+    pdf.setDrawColor(...BRAND.line);
+    pdf.roundedRect(PAGE.l, cardY, PAGE.w - PAGE.l - PAGE.r, cardH, 10, 10, "FD");
+
+    pdf.setTextColor(...BRAND.dark);
+    pdf.setFontSize(11);
+    pdf.setFont("helvetica", "normal");
+    pdf.text(`Organization: ${safeText(userName || "-")}`, PAGE.l + 14, cardY + 24);
+    pdf.text(`Sector: ${safeText(sector || "-")}`, PAGE.l + 14, cardY + 42);
+    pdf.setTextColor(...BRAND.muted);
+    pdf.text(`Generated: ${new Date().toLocaleString()}`, PAGE.l + 14, cardY + 60);
+
+    // Summary (right)
+    const rightX = PAGE.w - PAGE.r - 220;
+    pdf.setTextColor(...BRAND.dark);
+    pdf.setFont("helvetica", "bold");
+    pdf.text("Summary", rightX, cardY + 24);
+
+    pdf.setFont("helvetica", "normal");
+    pdf.setTextColor(...BRAND.muted);
+    pdf.text(`Total: ${completion.total}`, rightX, cardY + 42);
+    pdf.text(`Done: ${completion.done}`, rightX + 80, cardY + 42);
+    pdf.text(`Open: ${completion.open}`, rightX + 150, cardY + 42);
+
+    const barX = rightX;
+    const barY = cardY + 54;
+    const barW = 190;
+    const barH2 = 8;
+
+    pdf.setDrawColor(...BRAND.line);
+    pdf.setFillColor(...BRAND.bg);
+    pdf.roundedRect(barX, barY, barW, barH2, 4, 4, "FD");
+
+    pdf.setFillColor(...BRAND.green);
+    pdf.roundedRect(barX, barY, Math.max(6, (barW * completion.pct) / 100), barH2, 4, 4, "F");
+
+    pdf.setFont("helvetica", "bold");
+    pdf.setTextColor(...BRAND.dark);
+    pdf.text(`${completion.pct}%`, barX + barW + 10, barY + 8);
+  };
+
+  const drawFooter = (pageNumber, pageCount) => {
+    const y = PAGE.h - 18;
+    pdf.setDrawColor(...BRAND.line);
+    pdf.line(PAGE.l, PAGE.h - PAGE.b + 10, PAGE.w - PAGE.r, PAGE.h - PAGE.b + 10);
+
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(9);
+    pdf.setTextColor(...BRAND.muted);
+    pdf.text("EcoTrack — Internal use", PAGE.l, y);
+    pdf.text(`Page ${pageNumber} of ${pageCount}`, PAGE.w - PAGE.r - 90, y);
+  };
+
+  drawHeader();
+
+  let cursorY = 180;
+
+  // --- Section: Upcoming schedule ---
+  pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(12);
+  pdf.setTextColor(...BRAND.dark);
+  pdf.text("Upcoming schedule", PAGE.l, cursorY);
+
+  pdf.setFont("helvetica", "normal");
+  pdf.setFontSize(10);
+  pdf.setTextColor(...BRAND.muted);
+  pdf.text("Open actions that already have a scheduled date.", PAGE.l, cursorY + 14);
+
+  const scheduledRows = scheduledOpen.length
+    ? scheduledOpen.map((it, idx) => [
+        idx + 1,
+        formatISOShort(it.scheduledFor),
+        safeText(it.text),
+        normalizeImpact(it.impact),
+        normalizeEffort(it.effort),
+        "Planned",
+      ])
+    : [["—", "—", "No scheduled open actions yet.", "—", "—", "—"]];
+
+  autoTable(pdf, {
+    startY: cursorY + 24,
+    head: [["#", "Date", "Action", "Impact", "Effort", "Status"]],
+    body: scheduledRows,
+    theme: "striped",
+    margin: { left: PAGE.l, right: PAGE.r },
+    styles: {
+      font: "helvetica",
+      fontSize: 10,
+      cellPadding: 6,
+      lineColor: BRAND.line,
+      lineWidth: 0.5,
+      overflow: "linebreak",
+      valign: "top",
+    },
+    headStyles: {
+      fillColor: BRAND.green,
+      textColor: 255,
+      fontStyle: "bold",
+    },
+    columnStyles: {
+      0: { cellWidth: 26 },
+      1: { cellWidth: 70 },
+      2: { cellWidth: PAGE.w - PAGE.l - PAGE.r - (26 + 70 + 70 + 62 + 62) },
+      3: { cellWidth: 70 },
+      4: { cellWidth: 62 },
+      5: { cellWidth: 62 },
+    },
+    didDrawPage: (data) => {
+      const pageCount = pdf.internal.getNumberOfPages();
+      drawFooter(data.pageNumber, pageCount);
+    },
+  });
+
+  cursorY = pdf.lastAutoTable.finalY + 26;
+
+  // --- Section: Backlog (unscheduled) ---
+  pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(12);
+  pdf.setTextColor(...BRAND.dark);
+  pdf.text("Backlog (unscheduled)", PAGE.l, cursorY);
+
+  pdf.setFont("helvetica", "normal");
+  pdf.setFontSize(10);
+  pdf.setTextColor(...BRAND.muted);
+  pdf.text("Open actions not scheduled yet (priority order).", PAGE.l, cursorY + 14);
+
+  const backlogRows = unscheduledOpen.length
+    ? unscheduledOpen.map((it, idx) => [
+        idx + 1,
+        safeText(it.text),
+        normalizeImpact(it.impact),
+        normalizeEffort(it.effort),
+        normalizeTimeframe(it.timeframe),
+      ])
+    : [["—", "No unscheduled open actions.", "—", "—", "—"]];
+
+  autoTable(pdf, {
+    startY: cursorY + 24,
+    head: [["#", "Action", "Impact", "Effort", "Timeframe"]],
+    body: backlogRows,
+    theme: "striped",
+    margin: { left: PAGE.l, right: PAGE.r },
+    styles: {
+      font: "helvetica",
+      fontSize: 10,
+      cellPadding: 6,
+      lineColor: BRAND.line,
+      lineWidth: 0.5,
+      overflow: "linebreak",
+      valign: "top",
+    },
+    headStyles: {
+      fillColor: BRAND.dark,
+      textColor: 255,
+      fontStyle: "bold",
+    },
+    columnStyles: {
+      0: { cellWidth: 26 },
+      1: { cellWidth: PAGE.w - PAGE.l - PAGE.r - (26 + 70 + 62 + 90) },
+      2: { cellWidth: 70 },
+      3: { cellWidth: 62 },
+      4: { cellWidth: 90 },
+    },
+    didDrawPage: (data) => {
+      const pageCount = pdf.internal.getNumberOfPages();
+      drawFooter(data.pageNumber, pageCount);
+    },
+  });
+
+  const fileName = `EcoTrack_ActionPlan_${new Date().toISOString().slice(0, 10)}.pdf`;
+  pdf.save(fileName);
+};
+
 
   /* ---------- Misc helpers ---------- */
 
   const completedCount = actionPlan.filter((i) => i.completed).length;
-  const completionRatio =
-    actionPlan.length > 0 ? completedCount / actionPlan.length : 0;
-
-  const sprintItems = useMemo(
-    () => actionPlan.filter((i) => i.inSprint),
-    [actionPlan]
-  );
-  const sprintTotal = sprintItems.length;
-  const sprintDone = sprintItems.filter((i) => i.completed).length;
-  const sprintProgress =
-    sprintTotal > 0 ? Math.round((sprintDone / sprintTotal) * 100) : 0;
+  const completionRatio = actionPlan.length > 0 ? completedCount / actionPlan.length : 0;
 
   const getTargetDateForItem = (item) => {
     const base =
-      item.createdAt && item.createdAt.toDate
-        ? item.createdAt.toDate()
-        : new Date();
+      item.createdAt && item.createdAt.toDate ? item.createdAt.toDate() : new Date();
 
     const tf = normalizeTimeframe(item.timeframe || "").toLowerCase();
     const d = new Date(base);
 
-    if (tf.includes("quick") || tf.includes("0–6") || tf.includes("0-6")) {
-      d.setMonth(d.getMonth() + 3);
-    } else if (tf.includes("6–12") || tf.includes("6-12")) {
-      d.setMonth(d.getMonth() + 9);
-    } else {
-      d.setMonth(d.getMonth() + 12);
-    }
+    if (tf.includes("quick") || tf.includes("0–6") || tf.includes("0-6")) d.setMonth(d.getMonth() + 3);
+    else if (tf.includes("6–12") || tf.includes("6-12")) d.setMonth(d.getMonth() + 9);
+    else d.setMonth(d.getMonth() + 12);
+
     return formatDateISO(d);
   };
+
+  const weeks = useMemo(() => getNextWeeks(weeksToShow, new Date()), [weeksToShow]);
+
+  const scheduledByWeek = useMemo(() => {
+    const map = new Map(weeks.map((w) => [w.key, []]));
+    const unscheduled = [];
+
+    for (const item of actionPlan) {
+      if (item.completed) continue; // planner focuses on open items
+      const iso = item.scheduledFor ? String(item.scheduledFor) : "";
+      const week = weeks.find((w) => isISODateInRange(iso, w.weekStart, w.weekEnd));
+      if (week) map.get(week.key).push(item);
+      else unscheduled.push(item);
+    }
+
+    for (const [k, arr] of map.entries()) {
+      arr.sort((a, b) => String(a.scheduledFor || "").localeCompare(String(b.scheduledFor || "")));
+      map.set(k, arr);
+    }
+
+    unscheduled.sort((a, b) => priorityScore(b) - priorityScore(a));
+
+    return { map, unscheduled };
+  }, [actionPlan, weeks]);
+
+  const unscheduledOpenCount = scheduledByWeek.unscheduled.length;
 
   /* ---------- Loading state ---------- */
 
@@ -928,24 +1230,9 @@ export default function SuggestionsPage() {
     return (
       <div className="landing" style={{ alignItems: "stretch" }}>
         <TopNav />
-        <main
-          className="landing__main"
-          style={{
-            maxWidth: 1200,
-            width: "100%",
-            paddingTop: 80,
-          }}
-        >
+        <main className="landing__main" style={{ maxWidth: 1200, width: "100%", paddingTop: 80 }}>
           <Card>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                fontSize: 14,
-                color: "#64748b",
-              }}
-            >
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, color: "#64748b" }}>
               <span
                 className="spinner"
                 style={{
@@ -967,6 +1254,222 @@ export default function SuggestionsPage() {
 
   /* ---------- Render helpers ---------- */
 
+  const renderPlanner = () => (
+    <div
+      style={{
+        marginBottom: 12,
+        padding: 12,
+        borderRadius: 12,
+        border: "1px dashed #d1d5db",
+        background: "#f9fafb",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          gap: 8,
+          marginBottom: 8,
+          flexWrap: "wrap",
+        }}
+      >
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "#0f172a" }}>
+            Planner (Next {weeksToShow} weeks)
+          </div>
+          <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
+            Strict rule: <strong>only 1 open action per week</strong>.
+          </div>
+          <div style={{ fontSize: 12, color: "#64748b", marginTop: 6 }}>
+            Unscheduled open actions: <strong>{unscheduledOpenCount}</strong>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <select
+            value={planHorizon}
+            onChange={(e) => setPlanHorizon(e.target.value)}
+            style={{
+              padding: "6px 8px",
+              borderRadius: 8,
+              border: "1px solid #e2e8f0",
+              fontSize: 12,
+              background: "#fff",
+            }}
+          >
+            <option value="4w">4 weeks</option>
+            <option value="8w">8 weeks</option>
+          </select>
+
+          <button
+            type="button"
+            className="btn btn--ghost"
+            style={{ fontSize: 12, padding: "4px 8px" }}
+            onClick={handleGenerateSchedule}
+            disabled={unscheduledOpenCount === 0}
+            title="Schedules only unscheduled items into empty weeks."
+          >
+            Generate plan
+          </button>
+
+          <button
+            type="button"
+            className="btn btn--ghost"
+            style={{ fontSize: 12, padding: "4px 8px" }}
+            onClick={handleRegenerateSchedule}
+            disabled={actionPlan.filter((i) => !i.completed).length === 0}
+            title="Overwrites schedules for all open items to enforce 1/week."
+          >
+            Regenerate (enforce 1/week)
+          </button>
+
+          <button
+            type="button"
+            className="btn btn--ghost"
+            style={{ fontSize: 12, padding: "4px 8px" }}
+            onClick={handleClearSchedule}
+            disabled={!actionPlan.some((i) => i.scheduledFor)}
+          >
+            Clear schedule
+          </button>
+        </div>
+      </div>
+
+      {/* Weeks board */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+          gap: 8,
+        }}
+      >
+        {weeks.map((w, idx) => {
+          const items = scheduledByWeek.map.get(w.key) || [];
+          const label = `Week ${idx + 1}`;
+          const range = `${formatDateISO(w.weekStart)} → ${formatDateISO(w.weekEnd)}`;
+
+          return (
+            <div
+              key={w.key}
+              style={{
+                borderRadius: 12,
+                border: "1px solid #e2e8f0",
+                background: "#fff",
+                padding: 10,
+                minHeight: 90,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "baseline",
+                  gap: 8,
+                  marginBottom: 6,
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#0f172a" }}>{label}</div>
+                  <div style={{ fontSize: 11, color: "#94a3b8" }}>{range}</div>
+                </div>
+                <Badge>{items.length} items</Badge>
+              </div>
+
+              {items.length ? (
+                <ul
+                  style={{
+                    listStyle: "none",
+                    padding: 0,
+                    margin: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                  }}
+                >
+                  {items.slice(0, 6).map((item) => (
+                    <li key={item.id} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleCompleted(item)}
+                        style={{
+                          marginTop: 2,
+                          width: 16,
+                          height: 16,
+                          borderRadius: 4,
+                          border: "1px solid #cbd5f5",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: 11,
+                          background: item.completed ? "#148A58" : "#ffffff",
+                          color: item.completed ? "#ffffff" : "transparent",
+                          cursor: "pointer",
+                          flexShrink: 0,
+                        }}
+                        aria-label={item.completed ? "Mark as not completed" : "Mark as completed"}
+                      >
+                        ✓
+                      </button>
+
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 12, color: "#0f172a", lineHeight: 1.25 }}>
+                          {item.text}
+                        </div>
+                        <div style={{ marginTop: 2, fontSize: 11, color: "#94a3b8" }}>
+                          Scheduled: <strong>{item.scheduledFor || "—"}</strong>
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                  {items.length > 6 && (
+                    <li style={{ fontSize: 11, color: "#94a3b8" }}>+{items.length - 6} more</li>
+                  )}
+                </ul>
+              ) : (
+                <div style={{ fontSize: 12, color: "#94a3b8" }}>No actions scheduled.</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Unscheduled preview */}
+      {unscheduledOpenCount > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#0f172a", marginBottom: 6 }}>
+            Unscheduled (priority order)
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {scheduledByWeek.unscheduled.slice(0, 5).map((item) => (
+              <div
+                key={item.id}
+                style={{
+                  padding: 8,
+                  borderRadius: 10,
+                  border: "1px solid #e2e8f0",
+                  background: "#fff",
+                }}
+              >
+                <div style={{ fontSize: 12, color: "#0f172a" }}>{item.text}</div>
+                <div style={{ marginTop: 4, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  <Badge>Impact: {normalizeImpact(item.impact)}</Badge>
+                  <Badge>Effort: {normalizeEffort(item.effort)}</Badge>
+                  <Badge>{normalizeTimeframe(item.timeframe)}</Badge>
+                </div>
+              </div>
+            ))}
+            {unscheduledOpenCount > 5 && (
+              <div style={{ fontSize: 12, color: "#94a3b8" }}>
+                +{unscheduledOpenCount - 5} more unscheduled items
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   const renderActionPlanCard = () => (
     <Card>
       <div
@@ -979,23 +1482,9 @@ export default function SuggestionsPage() {
         }}
       >
         <div>
-          <div
-            style={{
-              fontSize: 15,
-              fontWeight: 600,
-              color: "#0f172a",
-            }}
-          >
-            Your Action Plan
-          </div>
-          <div
-            style={{
-              fontSize: 12,
-              color: "#64748b",
-              marginTop: 2,
-            }}
-          >
-            Build your backlog and then focus on a short Action Sprint.
+          <div style={{ fontSize: 15, fontWeight: 600, color: "#0f172a" }}>Your Action Plan</div>
+          <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
+            Build a backlog, then auto-schedule it into a weekly plan.
           </div>
         </div>
 
@@ -1027,222 +1516,22 @@ export default function SuggestionsPage() {
 
       {/* Scenario */}
       {typeof currentOverall === "number" && (
-        <div
-          style={{
-            marginBottom: 10,
-            fontSize: 12,
-            color: "#475569",
-          }}
-        >
-          Scenario: if you implement all actions in this plan, your overall
-          score could move from{" "}
+        <div style={{ marginBottom: 10, fontSize: 12, color: "#475569" }}>
+          Scenario: if you implement all actions in this plan, your overall score could move from{" "}
           <strong>{currentOverall}%</strong> to{" "}
-          <strong>
-            {estimatedImpact.futureOverall ?? currentOverall}%
-          </strong>{" "}
-          (approx. +{estimatedImpact.overallDelta} pts).
+          <strong>{estimatedImpact.futureOverall ?? currentOverall}%</strong> (approx. +
+          {estimatedImpact.overallDelta} pts).
         </div>
       )}
 
       {/* Errors */}
-      {planError && (
-        <div
-          style={{
-            marginBottom: 8,
-            fontSize: 12,
-            color: "#b91c1c",
-          }}
-        >
-          {planError}
-        </div>
-      )}
+      {planError && <div style={{ marginBottom: 8, fontSize: 12, color: "#b91c1c" }}>{planError}</div>}
 
-      {/* 30-Day Action Sprint */}
-      <div
-        style={{
-          marginBottom: 12,
-          padding: 10,
-          borderRadius: 12,
-          border: "1px dashed #d1d5db",
-          background: "#f9fafb",
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: 8,
-            marginBottom: 6,
-          }}
-        >
-          <div>
-            <div
-              style={{
-                fontSize: 13,
-                fontWeight: 600,
-                color: "#0f172a",
-              }}
-            >
-              30-Day Action Sprint
-            </div>
-            <div
-              style={{
-                fontSize: 12,
-                color: "#64748b",
-                marginTop: 2,
-              }}
-            >
-              {sprintTotal > 0
-                ? "Focus on a small set of priority actions for the next 30 days."
-                : "Create a focused mini-plan with 3–5 actions from your Action Plan."}
-            </div>
-          </div>
-
-          {sprintTotal > 0 && (
-            <Badge>
-              {sprintDone}/{sprintTotal} done
-            </Badge>
-          )}
-        </div>
-
-        {sprintTotal > 0 ? (
-          <>
-            {/* Sprint progress */}
-            <div
-              style={{
-                width: "100%",
-                height: 6,
-                borderRadius: 999,
-                background: "#e5e7eb",
-                marginBottom: 8,
-              }}
-            >
-              <div
-                style={{
-                  width: `${sprintProgress}%`,
-                  height: "100%",
-                  borderRadius: 999,
-                  background:
-                    "linear-gradient(90deg, #16A34A, #22C55E)",
-                  transition: "width 0.2s ease-out",
-                }}
-              />
-            </div>
-
-            {/* Sprint items (compact list) */}
-            <ul
-              style={{
-                listStyle: "none",
-                padding: 0,
-                margin: 0,
-                display: "flex",
-                flexDirection: "column",
-                gap: 4,
-              }}
-            >
-              {sprintItems.map((item) => (
-                <li
-                  key={item.id}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    fontSize: 12,
-                    color: "#0f172a",
-                  }}
-                >
-                  <span
-                    style={{
-                      width: 14,
-                      height: 14,
-                      borderRadius: 999,
-                      border: "1px solid #cbd5f5",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: 10,
-                      background: item.completed ? "#148A58" : "#ffffff",
-                      color: item.completed ? "#ffffff" : "transparent",
-                      flexShrink: 0,
-                    }}
-                  >
-                    ✓
-                  </span>
-                  <span
-                    style={{
-                      textDecoration: item.completed
-                        ? "line-through"
-                        : "none",
-                      color: item.completed ? "#9ca3af" : "#111827",
-                    }}
-                  >
-                    {item.text}
-                  </span>
-                </li>
-              ))}
-            </ul>
-
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "flex-end",
-                marginTop: 8,
-              }}
-            >
-              <button
-                type="button"
-                className="btn btn--ghost"
-                style={{ fontSize: 12, padding: "4px 8px" }}
-                onClick={handleClearSprint}
-              >
-                Reset Sprint
-              </button>
-            </div>
-          </>
-        ) : (
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              marginTop: 6,
-              gap: 8,
-              flexWrap: "wrap",
-              alignItems: "center",
-            }}
-          >
-            <span
-              style={{
-                fontSize: 12,
-                color: "#94a3b8",
-              }}
-            >
-              You don’t have an active Sprint yet.
-            </span>
-            <button
-              type="button"
-              className="btn btn--ghost"
-              style={{ fontSize: 12, padding: "4px 8px" }}
-              onClick={handleStartSprint}
-              disabled={
-                actionPlan.filter((i) => !i.completed).length === 0
-              }
-            >
-              Start 30-day Action Sprint
-            </button>
-          </div>
-        )}
-      </div>
+      {/* Planner */}
+      {renderPlanner()}
 
       {/* Roadmap buttons + export */}
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: 8,
-          marginBottom: 10,
-        }}
-      >
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
         <button
           type="button"
           className="btn btn--ghost"
@@ -1273,33 +1562,14 @@ export default function SuggestionsPage() {
 
       {/* Action list */}
       {planLoading ? (
-        <div
-          style={{
-            fontSize: 13,
-            color: "#94a3b8",
-          }}
-        >
-          Loading your plan…
-        </div>
+        <div style={{ fontSize: 13, color: "#94a3b8" }}>Loading your plan…</div>
       ) : actionPlan.length === 0 ? (
-        <div
-          style={{
-            fontSize: 13,
-            color: "#94a3b8",
-          }}
-        >
-          You haven’t added any actions yet. Use{" "}
-          <strong>“Add to action plan”</strong> on the suggestions to build your
-          roadmap.
+        <div style={{ fontSize: 13, color: "#94a3b8" }}>
+          You haven’t added any actions yet. Use <strong>“Add to action plan”</strong> on the
+          suggestions to build your roadmap.
         </div>
       ) : (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 8,
-          }}
-        >
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {actionPlan.map((item) => (
             <div
               key={item.id}
@@ -1331,11 +1601,7 @@ export default function SuggestionsPage() {
                   cursor: "pointer",
                   flexShrink: 0,
                 }}
-                aria-label={
-                  item.completed
-                    ? "Mark as not completed"
-                    : "Mark as completed"
-                }
+                aria-label={item.completed ? "Mark as not completed" : "Mark as completed"}
               >
                 ✓
               </button>
@@ -1351,6 +1617,7 @@ export default function SuggestionsPage() {
                 >
                   {item.text}
                 </div>
+
                 <div
                   style={{
                     marginTop: 4,
@@ -1362,19 +1629,14 @@ export default function SuggestionsPage() {
                   }}
                 >
                   {item.impact && <Badge>{normalizeImpact(item.impact)}</Badge>}
-                  {item.effort && (
-                    <Badge>Effort: {normalizeEffort(item.effort)}</Badge>
-                  )}
-                  {item.timeframe && (
-                    <Badge>{normalizeTimeframe(item.timeframe)}</Badge>
-                  )}
+                  {item.effort && <Badge>Effort: {normalizeEffort(item.effort)}</Badge>}
+                  {item.timeframe && <Badge>{normalizeTimeframe(item.timeframe)}</Badge>}
                   <span>
-                    Target date:{" "}
-                    <strong>{getTargetDateForItem(item)}</strong>
+                    Target date: <strong>{getTargetDateForItem(item)}</strong>
                   </span>
-                  {item.inSprint && (
-                    <Badge>In Sprint</Badge>
-                  )}
+                  <span>
+                    • Scheduled: <strong>{item.scheduledFor || "—"}</strong>
+                  </span>
                 </div>
               </div>
 
@@ -1400,12 +1662,7 @@ export default function SuggestionsPage() {
   );
 
   const renderSuggestionsColumn = () => (
-    <div
-      style={{
-        display: "grid",
-        gap: 12,
-      }}
-    >
+    <div style={{ display: "grid", gap: 12 }}>
       {hasSuggestions ? (
         <div
           style={{
@@ -1418,26 +1675,16 @@ export default function SuggestionsPage() {
             const reasonLines = [];
 
             if (s.pillar && worstPillarLabel && s.pillar === worstPillarKey) {
-              reasonLines.push(
-                `This action targets your most fragile pillar (${worstPillarLabel}).`
-              );
+              reasonLines.push(`This action targets your most fragile pillar (${worstPillarLabel}).`);
             } else if (s.pillar) {
               const pLabel =
-                s.pillar === "E"
-                  ? "Environmental"
-                  : s.pillar === "S"
-                  ? "Social"
-                  : s.pillar === "G"
-                  ? "Governance"
-                  : s.pillar;
+                s.pillar === "E" ? "Environmental" : s.pillar === "S" ? "Social" : "Governance";
               reasonLines.push(`This action strengthens the ${pLabel} pillar.`);
             }
 
             if (s.tags && s.tags.length) {
               reasonLines.push(
-                `Focus area: ${s.tags.slice(0, 3).join(", ")}${
-                  s.tags.length > 3 ? "…" : ""
-                }`
+                `Focus area: ${s.tags.slice(0, 3).join(", ")}${s.tags.length > 3 ? "…" : ""}`
               );
             }
 
@@ -1449,29 +1696,11 @@ export default function SuggestionsPage() {
 
             return (
               <Card key={s.id}>
-                <div
-                  style={{
-                    fontSize: 15,
-                    fontWeight: 600,
-                    marginBottom: 4,
-                    color: "#0f172a",
-                  }}
-                >
-                  {s.title ||
-                    (typeof s.text === "string"
-                      ? s.text.split(".")[0]
-                      : "Suggested action")}
+                <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4, color: "#0f172a" }}>
+                  {s.title || (typeof s.text === "string" ? s.text.split(".")[0] : "Suggested action")}
                 </div>
 
-                <div
-                  style={{
-                    fontSize: 14,
-                    color: "#0f172a",
-                    lineHeight: 1.4,
-                  }}
-                >
-                  {s.text}
-                </div>
+                <div style={{ fontSize: 14, color: "#0f172a", lineHeight: 1.4 }}>{s.text}</div>
 
                 <div
                   style={{
@@ -1490,14 +1719,7 @@ export default function SuggestionsPage() {
                 </div>
 
                 {!!s.tags?.length && (
-                  <div
-                    style={{
-                      marginTop: 8,
-                      display: "flex",
-                      gap: 6,
-                      flexWrap: "wrap",
-                    }}
-                  >
+                  <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
                     {s.tags.map((t) => (
                       <span
                         key={t}
@@ -1529,25 +1751,15 @@ export default function SuggestionsPage() {
                   </div>
                 )}
 
-                <div
-                  style={{
-                    marginTop: 12,
-                    display: "flex",
-                    justifyContent: "flex-end",
-                  }}
-                >
+                <div style={{ marginTop: 12, display: "flex", justifyContent: "flex-end" }}>
                   {isInPlan(s) ? (
                     <button
                       type="button"
                       className="btn btn--ghost"
                       style={{ fontSize: 13, padding: "4px 10px" }}
                       onClick={() => {
-                        const existing = actionPlan.find(
-                          (i) => i.suggestionId === s.id
-                        );
-                        if (existing) {
-                          handleRemoveFromPlan(existing);
-                        }
+                        const existing = actionPlan.find((i) => i.suggestionId === s.id);
+                        if (existing) handleRemoveFromPlan(existing);
                       }}
                     >
                       Remove from plan
@@ -1569,19 +1781,8 @@ export default function SuggestionsPage() {
         </div>
       ) : (
         <Card>
-          <div
-            style={{
-              fontSize: 14,
-              color: "#64748b",
-              display: "flex",
-              flexDirection: "column",
-              gap: 8,
-            }}
-          >
-            <span>
-              No suggestions available yet. Run an assessment to unlock tailored
-              actions.
-            </span>
+          <div style={{ fontSize: 14, color: "#64748b", display: "flex", flexDirection: "column", gap: 8 }}>
+            <span>No suggestions available yet. Run an assessment to unlock tailored actions.</span>
             <div>
               <NewAssessmentButton
                 label="Start your first assessment"
@@ -1601,14 +1802,7 @@ export default function SuggestionsPage() {
     <div className="landing" style={{ alignItems: "stretch" }}>
       <TopNav />
 
-      <main
-        className="landing__main"
-        style={{
-          maxWidth: 1200,
-          width: "100%",
-          paddingTop: 80,
-        }}
-      >
+      <main className="landing__main" style={{ maxWidth: 1200, width: "100%", paddingTop: 80 }}>
         <div style={{ display: "grid", gap: 16 }}>
           {/* Header */}
           <div
@@ -1624,19 +1818,12 @@ export default function SuggestionsPage() {
               <h1 className="landing__title" style={{ marginBottom: 4 }}>
                 Suggestions
               </h1>
-              <div
-                className="landing__subtitle"
-                style={{ opacity: 0.9, fontSize: 14 }}
-              >
-                Turn your ESG assessment into a focused action plan and 30-day
-                Sprint.
+              <div className="landing__subtitle" style={{ opacity: 0.9, fontSize: 14 }}>
+                Turn your ESG assessment into a focused action plan and a weekly plan.
               </div>
             </div>
 
-            <div
-              className="landing__subtitle"
-              style={{ opacity: 0.8, fontSize: 14 }}
-            >
+            <div className="landing__subtitle" style={{ opacity: 0.8, fontSize: 14 }}>
               Welcome, {userName} • Sector: {sector || "—"}
             </div>
           </div>
@@ -1653,9 +1840,7 @@ export default function SuggestionsPage() {
               }}
             >
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                <span style={{ fontSize: 14, color: "#64748b" }}>
-                  {sourceHint}
-                </span>
+                <span style={{ fontSize: 14, color: "#64748b" }}>{sourceHint}</span>
 
                 {assessmentMeta ? (
                   <div
@@ -1670,56 +1855,33 @@ export default function SuggestionsPage() {
                   >
                     <Badge>Latest assessment</Badge>
                     <span>
-                      {formatDate(assessmentMeta.createdAt)} • Status:{" "}
-                      {assessmentMeta.status}
+                      {formatDate(assessmentMeta.createdAt)} • Status: {assessmentMeta.status}
                     </span>
                     {assessmentMeta.overall != null && (
                       <>
                         <span>• Overall: {assessmentMeta.overall}%</span>
-                        {assessmentMeta.env != null && (
-                          <span>· E: {assessmentMeta.env}%</span>
-                        )}
-                        {assessmentMeta.soc != null && (
-                          <span>· S: {assessmentMeta.soc}%</span>
-                        )}
-                        {assessmentMeta.gov != null && (
-                          <span>· G: {assessmentMeta.gov}%</span>
-                        )}
+                        {assessmentMeta.env != null && <span>· E: {assessmentMeta.env}%</span>}
+                        {assessmentMeta.soc != null && <span>· S: {assessmentMeta.soc}%</span>}
+                        {assessmentMeta.gov != null && <span>· G: {assessmentMeta.gov}%</span>}
                       </>
                     )}
                   </div>
                 ) : (
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: "#94a3b8",
-                    }}
-                  >
+                  <div style={{ fontSize: 12, color: "#94a3b8" }}>
                     Complete an assessment to unlock fully tailored suggestions.
                   </div>
                 )}
               </div>
 
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <NewAssessmentButton
-                  label="Improve score"
-                  className="btn btn--primary"
-                  sector={sector}
-                />
+                <NewAssessmentButton label="Improve score" className="btn btn--primary" sector={sector} />
               </div>
             </div>
           </Card>
 
           {/* Filters + search + sort */}
           <Card>
-            <div
-              style={{
-                display: "flex",
-                flexWrap: "wrap",
-                gap: 8,
-                alignItems: "center",
-              }}
-            >
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
               <input
                 type="text"
                 placeholder="Search suggestions…"
@@ -1818,14 +1980,9 @@ export default function SuggestionsPage() {
             </div>
           </Card>
 
-          {/* Layout: mobile → action plan top, suggestions below; desktop → suggestions left, plan sticky right */}
+          {/* Layout */}
           {isMobile ? (
-            <div
-              style={{
-                display: "grid",
-                gap: 16,
-              }}
-            >
+            <div style={{ display: "grid", gap: 16 }}>
               {renderActionPlanCard()}
               {renderSuggestionsColumn()}
             </div>
@@ -1838,13 +1995,7 @@ export default function SuggestionsPage() {
               }}
             >
               {renderSuggestionsColumn()}
-              <div
-                style={{
-                  position: "sticky",
-                  top: 88,
-                  alignSelf: "flex-start",
-                }}
-              >
+              <div style={{ position: "sticky", top: 88, alignSelf: "flex-start" }}>
                 {renderActionPlanCard()}
               </div>
             </div>
@@ -1854,20 +2005,17 @@ export default function SuggestionsPage() {
 
       <style>
         {`
-          @keyframes spin {
-            to { transform: rotate(360deg); }
-          }
-
+          @keyframes spin { to { transform: rotate(360deg); } }
           @media (max-width: 900px) {
-            .landing__main {
-              padding: 72px 16px 24px;
-            }
+            .landing__main { padding: 72px 16px 24px; }
           }
         `}
       </style>
     </div>
   );
 }
+
+
 
 
 

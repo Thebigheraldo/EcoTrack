@@ -1,26 +1,37 @@
 // src/pages/PricingPage.jsx
 import React from "react";
-import TopNav from "../components/TopNav";
 import "../components/landing.css";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation, Link } from "react-router-dom";
+import { auth } from "../firebase";
 
 export default function PricingPage() {
   const navigate = useNavigate();
+  const location = useLocation();
 
   const handleGoToCheckout = () => {
-    navigate("/checkout");
+    const user = auth.currentUser;
+
+    // Always save destination (checkout) so after signup/login we return here
+    const redirectTo = { from: { pathname: "/checkout" } };
+
+    if (!user) {
+      // New user: create account first
+      navigate("/signup", { state: redirectTo, replace: true });
+      return;
+    }
+
+    // Logged in: go to checkout
+    navigate("/checkout", { state: { from: location }, replace: true });
   };
 
   return (
     <div className="landing eco-landing-root">
-      <TopNav />
-
       <main className="eco-landing-main">
         <section className="eco-section eco-fade-in">
           <h1 className="eco-section-title">EcoTrack subscription</h1>
           <p className="eco-section-subtitle">
-            EcoTrack is currently offered as a single, simple plan designed
-            for small and medium businesses that want a clear ESG self-assessment.
+            EcoTrack is currently offered as a single, simple plan designed for
+            small and medium businesses that want a clear ESG self-assessment.
           </p>
 
           <div
@@ -72,6 +83,7 @@ export default function PricingPage() {
                     99,99 € / year
                   </h2>
                 </div>
+
                 <p
                   style={{
                     fontSize: 13,
@@ -104,25 +116,27 @@ export default function PricingPage() {
                   marginBottom: 12,
                 }}
               >
-                Future updates and improvements to EcoTrack will be included
-                in your subscription at no extra cost.
+                Future updates and improvements to EcoTrack will be included in
+                your subscription at no extra cost.
               </p>
 
-              <button
-                onClick={handleGoToCheckout}
-                className="eco-btn-primary"
-              >
+              <button onClick={handleGoToCheckout} className="eco-btn-primary">
                 Proceed to payment
               </button>
+
+              <p style={{ marginTop: 12, fontSize: 12, color: "#6b7280" }}>
+                Already have an account?{" "}
+                <Link
+                  to="/login"
+                  state={{ from: { pathname: "/checkout" } }}
+                  style={{ color: "#059669", textDecoration: "underline" }}
+                >
+                  Log in
+                </Link>
+              </p>
             </div>
 
-            <div
-              style={{
-                fontSize: 12,
-                color: "#6b7280",
-                maxWidth: 520,
-              }}
-            >
+            <div style={{ fontSize: 12, color: "#6b7280", maxWidth: 520 }}>
               <p>
                 <strong>Note:</strong> during the beta phase, the next step is a
                 simulated payment page. Once Stripe is integrated, this will
@@ -135,4 +149,6 @@ export default function PricingPage() {
     </div>
   );
 }
+
+
 
