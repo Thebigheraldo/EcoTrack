@@ -11,10 +11,11 @@ function HomePage() {
     <div>
       <Landing
         onLogin={() => navigate("/login")}
-        onSignup={() => navigate("/signup")}
+        onSignup={() => navigate("/pricing")} // ✅ qui
       />
     </div>
   );
 }
 
 export default HomePage;
+
