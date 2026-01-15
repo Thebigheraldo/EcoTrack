@@ -1,0 +1,174 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- GLOBAL HELPERS ----------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // 🔹 SINGLE SUPER-ADMIN ACCOUNT
+    // IMPORTANT: put here the EXACT UID of hvogli86@gmail.com
+    function isSuperAdmin() {
+      return request.auth != null &&
+             request.auth.uid == "lvMjDMKSjcbY9v4LmnrBungUAmI2";
+    }
+
+    // ===== USER DOC & SUBCOLLECTIONS =====
+    match /users/{userId} {
+
+      // ----- TYPE HELPERS -----
+      function hasOnlyAllowedUserFields() {
+        let allowed = [
+          'uid',
+          'email',
+          'name',
+          'profile',
+          'settings',
+          'onboardingCompleted',
+          'createdAt',
+          'updatedAt',
+          'role',
+          'subscriptionStatus',
+    'subscriptionPlan',
+    'subscriptionUpdatedAt'
+        ];
+        return request.resource.data.keys().hasOnly(allowed);
+      }
+
+      function profileTypesAreValid(p) {
+        return
+          (!('sector' in p) || p.sector is string) &&
+          (!('size' in p) || p.size is string) &&
+          (!('country' in p) || p.country is string) &&
+          (!('turnover' in p) || p.turnover is string) &&
+          (!('csrd' in p) || p.csrd is string) &&
+          (!('goal' in p) || p.goal is string) &&
+          (!('timeline' in p) || p.timeline is string);
+      }
+
+      function settingsTypesAreValid(s) {
+        return
+          (!('remindAssessments' in s) || s.remindAssessments is bool);
+      }
+
+      function userTypesAreValid() {
+        return
+          (!('uid' in request.resource.data) || request.resource.data.uid is string) &&
+          (!('email' in request.resource.data) || request.resource.data.email is string) &&
+          (!('name' in request.resource.data) || request.resource.data.name is string) &&
+          (!('onboardingCompleted' in request.resource.data) || request.resource.data.onboardingCompleted is bool) &&
+          (!('createdAt' in request.resource.data) || request.resource.data.createdAt is timestamp) &&
+          (!('updatedAt' in request.resource.data) || request.resource.data.updatedAt is timestamp) &&
+          (!('role' in request.resource.data) || request.resource.data.role is string) &&
+          (!('profile' in request.resource.data) ||
+            (request.resource.data.profile is map &&
+             profileTypesAreValid(request.resource.data.profile))) &&
+          (!('settings' in request.resource.data) ||
+            (request.resource.data.settings is map &&
+             settingsTypesAreValid(request.resource.data.settings)));
+      }
+
+      function actionPlanTypesAreValid(d) {
+        return
+          (!('suggestionId' in d) || d.suggestionId is string) &&
+          (!('text' in d) || d.text is string) &&
+          (!('tags' in d) || d.tags is list) &&
+          (!('impact' in d) || d.impact is string) &&
+          (!('effort' in d) || d.effort is string) &&
+          (!('timeframe' in d) || d.timeframe is string) &&
+          (!('completed' in d) || d.completed is bool) &&
+          (!('createdAt' in d) || d.createdAt is timestamp);
+      }
+
+      // ----- USER DOC -----
+      // user → own doc; super-admin → all docs
+      allow read: if isSignedIn() &&
+                  (request.auth.uid == userId || isSuperAdmin());
+
+      allow create: if isSignedIn()
+                    && request.auth.uid == userId
+                    && hasOnlyAllowedUserFields()
+                    && userTypesAreValid()
+                    && ('createdAt' in request.resource.data)
+                    && (
+                      !('role' in request.resource.data) ||
+                      request.resource.data.role == "user"
+                    );
+
+      allow update: if isSignedIn()
+                    && request.auth.uid == userId
+                    && hasOnlyAllowedUserFields()
+                    && userTypesAreValid()
+                    && (
+                      !('createdAt' in request.resource.data) ||
+                      request.resource.data.createdAt == resource.data.createdAt
+                    )
+                    && (
+                      !('role' in request.resource.data) ||
+                      request.resource.data.role == resource.data.role
+                    );
+
+      allow delete: if isSignedIn() && request.auth.uid == userId;
+
+      // ----- SUBCOLLECTION: assessments (per-user) -----
+      match /assessments/{assessmentId} {
+        // owner reads; super-admin also allowed
+        allow read: if isSignedIn() &&
+                    (request.auth.uid == userId || isSuperAdmin());
+
+        allow create: if isSignedIn()
+                      && request.auth.uid == userId
+                      && 'createdAt' in request.resource.data
+                      && request.resource.data.createdAt is timestamp;
+
+        allow update: if isSignedIn()
+                      && request.auth.uid == userId
+                      && (
+                        !('createdAt' in request.resource.data) ||
+                        request.resource.data.createdAt == resource.data.createdAt
+                      );
+
+        allow delete: if false;
+      }
+
+      // ----- SUBCOLLECTION: actionPlan -----
+      match /actionPlan/{itemId} {
+        allow read: if isSignedIn() && request.auth.uid == userId;
+
+        allow create: if isSignedIn()
+                      && request.auth.uid == userId
+                      && actionPlanTypesAreValid(request.resource.data);
+
+        allow update: if isSignedIn()
+                      && request.auth.uid == userId
+                      && actionPlanTypesAreValid(request.resource.data);
+
+        allow delete: if isSignedIn() && request.auth.uid == userId;
+      }
+    }
+
+    // ================================================
+    //   EXTRA RULE FOR collectionGroup('assessments')
+    // ================================================
+    // Any path that ends with /assessments/{assessmentId}
+    match /{path=**}/assessments/{assessmentId} {
+      // only super-admin can read via collection group
+      allow read: if isSignedIn() && isSuperAdmin();
+
+      // no writes via collectionGroup
+      allow create, update, delete: if false;
+    }
+
+    // ================================================
+    //   FEEDBACK COLLECTION
+    // ================================================
+    match /feedback/{docId} {
+      // any signed-in user can send feedback
+      allow create: if isSignedIn();
+
+      // no direct reads/updates/deletes from clients
+      allow read, update, delete: if false;
+    }
+  }
+}

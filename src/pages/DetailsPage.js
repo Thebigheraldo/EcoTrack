@@ -119,12 +119,11 @@ function normalizeAnswer(val) {
   return null;
 }
 
-function DetailsPage() {
+export default function DetailsPage() {
   const { assessmentId } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
 
-  // language + benchmark region
   const { language, benchmarkRegion } = useUserSettings();
   const t = DETAILS_TRANSLATIONS[language] || DETAILS_TRANSLATIONS.en;
 
@@ -135,6 +134,9 @@ function DetailsPage() {
 
   const [showModal, setShowModal] = useState(false);
   const [criticalPillar, setCriticalPillar] = useState(null);
+
+  // canonical stored scores (0..100): { overallScore, envScore, socScore, govScore }
+  const [storedScores, setStoredScores] = useState(null);
 
   // Sector weights aligned to actual sectors
   const sectorWeights = {
@@ -161,12 +163,16 @@ function DetailsPage() {
     Governance: t.govLabel,
   };
 
-  const categoryWeights =
-    sectorWeights[sector] || {
-      Environmental: 0.33,
-      Social: 0.33,
-      Governance: 0.34,
-    };
+  // ✅ stable weights object (fixes deps warning)
+  const categoryWeights = useMemo(() => {
+    return (
+      sectorWeights[sector] || {
+        Environmental: 0.33,
+        Social: 0.33,
+        Governance: 0.34,
+      }
+    );
+  }, [sector]);
 
   // -------- Load assessment from Firestore (if not already passed in state) --------
   useEffect(() => {
@@ -201,6 +207,25 @@ function DetailsPage() {
         }
 
         const data = snap.data();
+
+        // ✅ Prefer canonical stored scores if present (0..100)
+        const hasStored =
+          typeof data.overallScore === "number" &&
+          typeof data.envScore === "number" &&
+          typeof data.socScore === "number" &&
+          typeof data.govScore === "number";
+
+        if (hasStored) {
+          setStoredScores({
+            overallScore: data.overallScore,
+            envScore: data.envScore,
+            socScore: data.socScore,
+            govScore: data.govScore,
+          });
+        } else {
+          setStoredScores(null);
+        }
+
         const sectorFromDoc = data.sector || sector || "";
         const rawAnswers = data.answers || {};
 
@@ -237,53 +262,81 @@ function DetailsPage() {
   }, [assessmentId]);
 
   /*
-   * ---------- SCORING LOGIC (0–4 SCALE) ----------
+   * ---------- SCORES ----------
+   * computedScoresObj: derived from answers[] (fallback only)
+   * scoresObj: final pillar % used by UI (canonical first)
+   * overall: final overall % used by UI (canonical first)
    */
 
-  const categoryScoresRaw = { Environmental: [], Social: [], Governance: [] };
+  const computedScoresObj = useMemo(() => {
+    const categoryScoresRaw = { Environmental: [], Social: [], Governance: [] };
 
-  answers.forEach(({ question, score, answerScore, numericScore, answer }) => {
-    const cat = question?.category;
-    if (!cat || !categoryScoresRaw[cat]) return;
+    (answers || []).forEach(
+      ({ question, score, answerScore, numericScore, answer }) => {
+        const cat = question?.category;
+        if (!cat || !categoryScoresRaw[cat]) return;
 
-    let numeric =
-      typeof score === "number"
-        ? score
-        : typeof answerScore === "number"
-        ? answerScore
-        : typeof numericScore === "number"
-        ? numericScore
-        : answer === "Yes"
-        ? 1
-        : 0;
+        let numeric =
+          typeof score === "number"
+            ? score
+            : typeof answerScore === "number"
+            ? answerScore
+            : typeof numericScore === "number"
+            ? numericScore
+            : answer === "Yes"
+            ? 4
+            : 0;
 
-    if (numeric < 0) numeric = 0;
-    if (numeric > 4) numeric = 4;
+        numeric = Math.max(0, Math.min(4, numeric));
+        categoryScoresRaw[cat].push(numeric);
+      }
+    );
 
-    categoryScoresRaw[cat].push(numeric);
-  });
-
-  const scoresObj = {};
-  for (const category in categoryScoresRaw) {
-    const values = categoryScoresRaw[category];
-    if (values.length === 0) {
-      scoresObj[category] = 0;
-      continue;
+    const out = {};
+    for (const category in categoryScoresRaw) {
+      const values = categoryScoresRaw[category];
+      if (!values.length) {
+        out[category] = 0;
+        continue;
+      }
+      const sum = values.reduce((acc, v) => acc + v, 0);
+      const max = values.length * 4;
+      out[category] = Math.round((sum / max) * 100);
     }
+    return out;
+  }, [answers]);
 
-    const sum = values.reduce((acc, v) => acc + v, 0);
-    const max = values.length * 4;
-    const percent = Math.round((sum / max) * 100);
+  const scoresObj = useMemo(() => {
+    if (storedScores) {
+      return {
+        Environmental: storedScores.envScore,
+        Social: storedScores.socScore,
+        Governance: storedScores.govScore,
+      };
+    }
+    return computedScoresObj;
+  }, [storedScores, computedScoresObj]);
 
-    scoresObj[category] = percent;
-  }
+  const overall = useMemo(() => {
+    if (storedScores) return storedScores.overallScore;
 
-  // Critical logic
-  const criticalEntry = Object.entries(scoresObj).find(
-    ([_, score]) => score <= 20
-  );
+    const val =
+      (scoresObj.Environmental || 0) * (categoryWeights.Environmental || 0) +
+      (scoresObj.Social || 0) * (categoryWeights.Social || 0) +
+      (scoresObj.Governance || 0) * (categoryWeights.Governance || 0);
+
+    return Math.round(val * 10) / 10;
+  }, [storedScores, scoresObj, categoryWeights]);
+
+  // ---------- CRITICAL PILLAR LOGIC (0..100, threshold 20) ----------
+  const criticalEntry = useMemo(() => {
+    return Object.entries(scoresObj || {}).find(([_, v]) => {
+      return typeof v === "number" && !Number.isNaN(v) && v <= 20;
+    });
+  }, [scoresObj]);
+
   const hasCriticalPillar = !!criticalEntry;
-  const criticalCategory = hasCriticalPillar ? criticalEntry[0] : null;
+  const criticalCategory = criticalEntry ? criticalEntry[0] : null;
 
   useEffect(() => {
     if (hasCriticalPillar) {
@@ -291,15 +344,6 @@ function DetailsPage() {
       setShowModal(true);
     }
   }, [hasCriticalPillar, criticalCategory]);
-
-  // Weighted overall (0..100)
-  const overall = useMemo(() => {
-    const val =
-      (scoresObj.Environmental || 0) * (categoryWeights.Environmental || 0) +
-      (scoresObj.Social || 0) * (categoryWeights.Social || 0) +
-      (scoresObj.Governance || 0) * (categoryWeights.Governance || 0);
-    return Math.round(val * 10) / 10;
-  }, [scoresObj, categoryWeights]);
 
   const getRating = () => {
     if (hasCriticalPillar) return "❌ Critical";
@@ -327,11 +371,13 @@ function DetailsPage() {
     ],
   };
 
-  const lowScoreCategories = Object.entries(scoresObj)
-    .filter(([_, score]) => score < 50)
-    .map(([category]) => category);
+  const lowScoreCategories = useMemo(() => {
+    return Object.entries(scoresObj)
+      .filter(([_, score]) => (typeof score === "number" ? score < 50 : false))
+      .map(([category]) => category);
+  }, [scoresObj]);
 
-  // ---------- NORMALIZED SCORES ----------
+  // scores passed to other pages (0..100)
   const normalizedScores = useMemo(
     () => ({
       E: scoresObj.Environmental ?? 0,
@@ -357,6 +403,7 @@ function DetailsPage() {
 
         const sectorBench = benchmarkData[sector] || null;
         let benchmarkPayload = null;
+
         if (sectorBench) {
           const sectorAvgE = sectorBench.Environmental ?? null;
           const sectorAvgS = sectorBench.Social ?? null;
@@ -365,9 +412,12 @@ function DetailsPage() {
           const wS = categoryWeights.Social || 0;
           const wG = categoryWeights.Governance || 0;
           const sumW = wE + wS + wG || 1;
-          const sectorAvgOverall = Math.round(
-            ((sectorAvgE * wE + sectorAvgS * wS + sectorAvgG * wG) / sumW) * 10
-          ) / 10;
+
+          const sectorAvgOverall =
+            Math.round(
+              ((sectorAvgE * wE + sectorAvgS * wS + sectorAvgG * wG) / sumW) *
+                10
+            ) / 10;
 
           benchmarkPayload = {
             sectorAvgE,
@@ -383,12 +433,22 @@ function DetailsPage() {
           country: profile.country || null,
           csrdInScope: profile.csrd === "Yes",
 
-          overallScore: normalizedScores.overall,
-          eScore: normalizedScores.E,
-          sScore: normalizedScores.S,
-          gScore: normalizedScores.G,
+          // ✅ canonical fields (0..100)
+          overallScore: overall,
+          envScore: scoresObj.Environmental ?? 0,
+          socScore: scoresObj.Social ?? 0,
+          govScore: scoresObj.Governance ?? 0,
+
           benchmark: benchmarkPayload,
           completedAt: serverTimestamp(),
+
+          turnover: profile.turnover || null,
+goal: profile.goal || null,
+timeline: profile.timeline || null,
+benchmarkRegion: benchmarkRegion || "eu",
+language: language || "en",
+
+
         });
       } catch (err) {
         console.error("Failed to update assessment summary:", err);
@@ -396,113 +456,114 @@ function DetailsPage() {
     };
 
     saveSummary();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, assessmentId, sector, normalizedScores, categoryWeights]);
+  }, [loading, assessmentId, sector, overall, scoresObj, categoryWeights]);
 
   // ---------- NARRATIVE DATA FOR "WHAT THIS MEANS" ----------
   const sectorBenchmark = benchmarkData[sector] || null;
-  let sectorBenchmarkOverall = null;
-  if (sectorBenchmark) {
+
+  const sectorBenchmarkOverall = useMemo(() => {
+    if (!sectorBenchmark) return null;
+
     const bE = sectorBenchmark.Environmental ?? 0;
     const bS = sectorBenchmark.Social ?? 0;
     const bG = sectorBenchmark.Governance ?? 0;
+
     const wE = categoryWeights.Environmental || 0;
     const wS = categoryWeights.Social || 0;
     const wG = categoryWeights.Governance || 0;
     const sumW = wE + wS + wG || 1;
-    sectorBenchmarkOverall = Math.round(
-      ((bE * wE + bS * wS + bG * wG) / sumW) * 10
-    ) / 10;
-  }
 
-  const scoresEntries = Object.entries(scoresObj);
-  let weakestPillar = null;
-  let weakestScore = null;
-  if (scoresEntries.length > 0) {
-    const sorted = [...scoresEntries].sort((a, b) => a[1] - b[1]);
-    weakestPillar = sorted[0][0];
-    weakestScore = sorted[0][1];
-  }
+    return (
+      Math.round(((bE * wE + bS * wS + bG * wG) / sumW) * 10) / 10
+    );
+  }, [sectorBenchmark, categoryWeights]);
 
-  const summaryBullets = [];
+  const weakest = useMemo(() => {
+    const entries = Object.entries(scoresObj || {});
+    if (!entries.length) return { pillar: null, score: null };
+    const sorted = [...entries].sort((a, b) => a[1] - b[1]);
+    return { pillar: sorted[0][0], score: sorted[0][1] };
+  }, [scoresObj]);
 
-  // Bullet 1: vs sector median
-  if (sectorBenchmarkOverall !== null && !Number.isNaN(overall)) {
-    const diff = overall - sectorBenchmarkOverall;
-    let posEn = "around the median for";
-    let posIt = "intorno alla media per";
+  const summaryBullets = useMemo(() => {
+    const bullets = [];
 
-    if (diff > 5) {
-      posEn = "above the median for";
-      posIt = "al di sopra della media per";
-    } else if (diff < -5) {
-      posEn = "below the median for";
-      posIt = "al di sotto della media per";
+    // Bullet 1: vs sector median
+    if (sectorBenchmarkOverall !== null && !Number.isNaN(overall)) {
+      const diff = overall - sectorBenchmarkOverall;
+      let posEn = "around the median for";
+      let posIt = "intorno alla media per";
+
+      if (diff > 5) {
+        posEn = "above the median for";
+        posIt = "al di sopra della media per";
+      } else if (diff < -5) {
+        posEn = "below the median for";
+        posIt = "al di sotto della media per";
+      }
+
+      const sectorLabel = sector || "your sector";
+
+      bullets.push({
+        id: "position",
+        text:
+          language === "it"
+            ? `Ti trovi ${posIt} le PMI ${sectorLabel}.`
+            : `You are ${posEn} ${sectorLabel} SMEs.`,
+        tooltip:
+          language === "it"
+            ? "Confronto con un benchmark medio di settore, ponderato su Ambiente, Sociale e Governance."
+            : "Comparison against an average sector benchmark, weighted across Environmental, Social and Governance.",
+      });
     }
 
-    const sectorLabel = sector || "your sector";
+    // Bullet 2: weakest pillar
+    if (weakest.pillar) {
+      const pillarLabel = categoryLabelMap[weakest.pillar] || weakest.pillar;
+      const s = weakest.score ?? 0;
 
-    summaryBullets.push({
-      id: "position",
-      text:
-        language === "it"
-          ? `Ti trovi ${posIt} le PMI ${sectorLabel}.`
-          : `You are ${posEn} ${sectorLabel} SMEs.`,
-      tooltip:
-        language === "it"
-          ? `Confronto con un benchmark medio di settore, ponderato su Ambiente, Sociale e Governance.`
-          : `Comparison against an average sector benchmark, weighted across Environmental, Social and Governance.`,
-    });
-  }
+      bullets.push({
+        id: "weakest",
+        text:
+          language === "it"
+            ? `Area più debole: ${pillarLabel} (${s}%).`
+            : `Main weakness: ${pillarLabel} (${s}%).`,
+        tooltip:
+          language === "it"
+            ? "È il pilastro con il punteggio più basso. Intervenire qui ha il maggior impatto sul punteggio complessivo."
+            : "This is the lowest-scoring pillar. Improvements here have the biggest impact on your overall score.",
+      });
 
-  // Bullet 2: weakest pillar
-  if (weakestPillar) {
-    const pillarLabel = categoryLabelMap[weakestPillar] || weakestPillar;
-    const s = weakestScore ?? 0;
+      bullets.push({
+        id: "next-step",
+        text:
+          language === "it"
+            ? `Prossimo passo: lavora su ${pillarLabel} e scegli 2–3 azioni nella pagina dei Suggerimenti.`
+            : `Next step: focus on ${pillarLabel} and pick 2–3 actions from your Suggestions page.`,
+        tooltip:
+          language === "it"
+            ? "Meglio poche azioni concrete nel pilastro più debole, che un piano teorico impossibile da attuare."
+            : "It’s better to start with a few concrete actions in your weakest pillar than a huge plan you never implement.",
+      });
+    }
 
-    summaryBullets.push({
-      id: "weakest",
-      text:
-        language === "it"
-          ? `Area più debole: ${pillarLabel} (${s}%).`
-          : `Main weakness: ${pillarLabel} (${s}%).`,
-      tooltip:
-        language === "it"
-          ? `È il pilastro con il punteggio più basso. Intervenire qui ha il maggior impatto sul punteggio complessivo.`
-          : `This is the lowest-scoring pillar. Improvements here have the biggest impact on your overall score.`,
-    });
-  }
+    // Fallback
+    if (!bullets.length && !Number.isNaN(overall)) {
+      bullets.push({
+        id: "fallback",
+        text:
+          language === "it"
+            ? `Il tuo punteggio ESG complessivo è ${overall}%. Usa la pagina dei Suggerimenti per definire i prossimi passi.`
+            : `Your overall ESG score is ${overall}%. Use the Suggestions page to define your next steps.`,
+        tooltip:
+          language === "it"
+            ? "Riepilogo base mostrato quando non sono disponibili benchmark o dettagli aggiuntivi."
+            : "Basic summary shown when no benchmark or detailed narrative is available.",
+      });
+    }
 
-  // Bullet 3: where to start
-  if (weakestPillar) {
-    const pillarLabel = categoryLabelMap[weakestPillar] || weakestPillar;
-    summaryBullets.push({
-      id: "next-step",
-      text:
-        language === "it"
-          ? `Prossimo passo: lavora su ${pillarLabel} e scegli 2–3 azioni nella pagina dei Suggerimenti.`
-          : `Next step: focus on ${pillarLabel} and pick 2–3 actions from your Suggestions page.`,
-      tooltip:
-        language === "it"
-          ? `Meglio poche azioni concrete nel pilastro più debole, che un piano teorico impossibile da attuare.`
-          : `It’s better to start with a few concrete actions in your weakest pillar than a huge plan you never implement.`,
-    });
-  }
-
-  // Fallback bullet if everything fails
-  if (summaryBullets.length === 0 && !Number.isNaN(overall)) {
-    summaryBullets.push({
-      id: "fallback",
-      text:
-        language === "it"
-          ? `Il tuo punteggio ESG complessivo è ${overall}%. Usa la pagina dei Suggerimenti per definire i prossimi passi.`
-          : `Your overall ESG score is ${overall}%. Use the Suggestions page to define your next steps.`,
-      tooltip:
-        language === "it"
-          ? `Riepilogo base mostrato quando non sono disponibili benchmark o dettagli aggiuntivi.`
-          : `Basic summary shown when no benchmark or detailed narrative is available.`,
-    });
-  }
+    return bullets;
+  }, [sectorBenchmarkOverall, overall, sector, language, weakest, categoryLabelMap]);
 
   // ---------- Actions ----------
   const handleStartOver = () => navigate("/dashboard");
@@ -531,15 +592,20 @@ function DetailsPage() {
       state: {
         sector,
         answers,
-        scores: normalizedScores,
-        threshold: 0.2,
+        scores: normalizedScores, // 0..100
+        threshold: 20, // 20%
       },
     });
   };
 
   const goSuggestions = () => {
     navigate("/suggestions", {
-      state: { sector, answers, scores: normalizedScores, threshold: 0.2 },
+      state: {
+        sector,
+        answers,
+        scores: normalizedScores, // 0..100
+        threshold: 20,
+      },
     });
   };
 
@@ -599,8 +665,14 @@ function DetailsPage() {
 
           {!hasCriticalPillar ? (
             <>
-              {/* Overall score + ALWAYS visible tooltip */}
-              <div style={{ marginTop: "2rem", display: "flex", gap: 8, alignItems: "center" }}>
+              <div
+                style={{
+                  marginTop: "2rem",
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "center",
+                }}
+              >
                 <span>
                   🌟{" "}
                   <strong>
@@ -640,7 +712,6 @@ function DetailsPage() {
                 {t.govLabel}: {(categoryWeights.Governance * 100).toFixed(0)}%
               </p>
 
-              {/* ---------- ALWAYS rendered "What this means" block ---------- */}
               <section
                 style={{
                   marginTop: "1.75rem",
@@ -652,7 +723,6 @@ function DetailsPage() {
                 }}
               >
                 <div
-                  className="what-this-means-header"
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -768,7 +838,7 @@ function DetailsPage() {
                 >
                   <strong>{categoryLabelMap[category] || category}</strong>
                   <ul>
-                    {suggestionsByCategory[category].map((tip, i) => (
+                    {(suggestionsByCategory[category] || []).map((tip, i) => (
                       <li key={i}>✅ {tip}</li>
                     ))}
                   </ul>
@@ -840,13 +910,8 @@ function DetailsPage() {
                 </strong>{" "}
                 {t.criticalAlertBodySuffix}
               </p>
-              <div
-                style={{
-                  display: "flex",
-                  gap: 8,
-                  justifyContent: "center",
-                }}
-              >
+
+              <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
                 <button
                   className="btn btn--primary"
                   onClick={() => {
@@ -868,7 +933,6 @@ function DetailsPage() {
   );
 }
 
-export default DetailsPage;
 
 
 

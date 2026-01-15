@@ -24,7 +24,6 @@ import "../components/landing.css";
 import NewAssessmentButton from "../components/NewAssessmentButton";
 import ecotrackLogo from "../assets/ecotrack-logo.png";
 
-
 // Tooltip
 import InfoTooltip from "../components/InfoTooltip";
 
@@ -48,6 +47,7 @@ function addMonths(date, months) {
   d.setMonth(d.getMonth() + months);
   return d;
 }
+
 const median = (arr) => {
   if (!arr.length) return null;
   const a = [...arr].sort((x, y) => x - y);
@@ -78,6 +78,35 @@ function normalizeAnswer(val) {
   if (val === "Unknown") return { score: 0, label: "Unknown" };
   if (val === "Partial") return { score: 2, label: "Partially implemented" };
   return null;
+}
+
+// ✅ NEW: adapter so suggestion engine receives stable values
+function adaptAnswersForSuggestionEngine(rawAnswers) {
+  const answers = rawAnswers || {};
+  const out = {};
+
+  for (const [qid, v] of Object.entries(answers)) {
+    // allow already-normalized inputs
+    if (typeof v === "string" || typeof v === "number") {
+      out[qid] = v;
+      continue;
+    }
+
+    if (!v) {
+      out[qid] = "Unknown";
+      continue;
+    }
+
+    const score = typeof v.score === "number" ? v.score : null;
+    const label = v.label != null ? String(v.label) : "";
+
+    if (label.toLowerCase() === "na") out[qid] = "NA";
+    else if (label.toLowerCase() === "unknown") out[qid] = "Unknown";
+    else if (score == null) out[qid] = "Unknown";
+    else out[qid] = score <= 1 ? "No" : "Yes";
+  }
+
+  return out;
 }
 
 // NEW: maturity level helper
@@ -183,6 +212,17 @@ export default function Dashboard() {
   const [userName, setUserName] = useState("");
   const [showMore, setShowMore] = useState(false);
 
+  // ✅ NEW: store full profile so suggestions can be filtered properly
+  const [profile, setProfile] = useState({
+    sector: "",
+    size: "",
+    country: "",
+    turnover: "",
+    csrd: "Unsure",
+    goal: "compliance",
+    timeline: "6-12",
+  });
+
   const [peerMedian, setPeerMedian] = useState(null);
   const [peerSeries, setPeerSeries] = useState([]);
 
@@ -221,7 +261,20 @@ export default function Dashboard() {
         userData.profile?.name ||
         (u.email?.split("@")[0] ?? "");
       setUserName(name);
-      setCountry(userData.profile?.country || "");
+
+      const p = userData.profile || {};
+      setCountry(p.country || "");
+
+      // ✅ NEW: persist profile for suggestion engine
+      setProfile({
+        sector: p.sector || "",
+        size: p.size || "",
+        country: p.country || "",
+        turnover: p.turnover || "",
+        csrd: p.csrd || "Unsure",
+        goal: p.goal || "compliance",
+        timeline: p.timeline || "6-12",
+      });
 
       // Load assessments (latest 12)
       const col = collection(db, "users", u.uid, "assessments");
@@ -229,7 +282,8 @@ export default function Dashboard() {
       const recentSnap = await getDocs(qRecent);
       const rows = recentSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
       setAssessments(rows);
-      setSector(rows[0]?.sector || userData.profile?.sector || null);
+
+      setSector(rows[0]?.sector || p.sector || null);
 
       // 🔔 Reminder logic
       const settings = userData.settings || {};
@@ -245,12 +299,8 @@ export default function Dashboard() {
           const submitted = rows.filter((r) => r.status === "submitted");
           if (submitted.length) {
             submitted.sort((a, b) => {
-              const da = a.createdAt?.toDate
-                ? a.createdAt.toDate()
-                : new Date(0);
-              const db = b.createdAt?.toDate
-                ? b.createdAt.toDate()
-                : new Date(0);
+              const da = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(0);
+              const db = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(0);
               return db - da;
             });
             const latestSubmitted = submitted[0];
@@ -290,11 +340,7 @@ export default function Dashboard() {
         );
         unsubLock = onSnapshot(qLatestSubmitted, (s) => {
           if (s.empty) return;
-          const data = s.docs[0].data() || {};
-          const ts =
-            data.updatedAt?.toDate?.() ||
-            data.createdAt?.toDate?.() ||
-            null;
+          // const data = s.docs[0].data() || {};
           // currently unused, but keeping hook for future live UX
         });
       } catch (e) {
@@ -316,21 +362,42 @@ export default function Dashboard() {
 
   const series = useMemo(() => {
     return assessments
-      .filter((a) => a.status === "submitted" && a.answers)
+      .filter((a) => a.status === "submitted")
       .map((a) => {
-        const s = scoreAssessment(
-          getQuestionsForSector(a.sector || sector || ""),
-          a.answers,
-          { sector: a.sector || sector || "" }
-        );
+        const date = a.createdAt?.toDate ? a.createdAt.toDate() : new Date();
+
+        // ✅ 1) Prefer canonical saved scores (0..100)
+        const hasCanonical =
+          typeof a.overallScore === "number" &&
+          typeof a.envScore === "number" &&
+          typeof a.socScore === "number" &&
+          typeof a.govScore === "number";
+
+        if (hasCanonical) {
+          return {
+            id: a.id,
+            date,
+            overall: a.overallScore, // 0..100
+            pillars: { E: a.envScore, S: a.socScore, G: a.govScore }, // 0..100
+            rating: a.rating ?? "—",
+            sector: a.sector,
+            answers: a.answers || {},
+            status: a.status,
+          };
+        }
+
+        // ✅ 2) Fallback for old docs: compute from answers (still 0..100)
+        const qs = getQuestionsForSector(a.sector || sector || "");
+        const s = scoreAssessment(qs, a.answers || {}, { sector: a.sector || sector || "" });
+
         return {
           id: a.id,
-          date: a.createdAt?.toDate ? a.createdAt.toDate() : new Date(),
-          overall: s.overall,
-          pillars: s.pillars,
-          rating: s.rating,
+          date,
+          overall: s.overall, // 0..100
+          pillars: s.pillars, // {E,S,G} 0..100
+          rating: s.rating ?? "—",
           sector: a.sector,
-          answers: a.answers,
+          answers: a.answers || {},
           status: a.status,
         };
       })
@@ -359,10 +426,7 @@ export default function Dashboard() {
     const m = fallbackBySector[sector] ?? 55;
     setPeerMedian(m);
 
-    const xDates = (series && series.length
-      ? series
-      : [{ date: new Date() }]
-    ).map((s) => s.date);
+    const xDates = (series && series.length ? series : [{ date: new Date() }]).map((s) => s.date);
     setPeerSeries(xDates.map((d) => ({ x: d, y: m })));
   }, [sector, series]);
 
@@ -385,21 +449,10 @@ export default function Dashboard() {
 
   // 🔹 deltas vs previous assessment
   const overallDelta =
-    previous && typeof previous.overall === "number"
-      ? overallScore - previous.overall
-      : null;
-  const deltaE =
-    previous && previous.pillars
-      ? (pillars.E || 0) - (previous.pillars.E || 0)
-      : null;
-  const deltaS =
-    previous && previous.pillars
-      ? (pillars.S || 0) - (previous.pillars.S || 0)
-      : null;
-  const deltaG =
-    previous && previous.pillars
-      ? (pillars.G || 0) - (previous.pillars.G || 0)
-      : null;
+    previous && typeof previous.overall === "number" ? overallScore - previous.overall : null;
+  const deltaE = previous && previous.pillars ? (pillars.E || 0) - (previous.pillars.E || 0) : null;
+  const deltaS = previous && previous.pillars ? (pillars.S || 0) - (previous.pillars.S || 0) : null;
+  const deltaG = previous && previous.pillars ? (pillars.G || 0) - (previous.pillars.G || 0) : null;
 
   const latestAssessmentDoc = useMemo(() => {
     const subs = assessments.filter((a) => a.status === "submitted");
@@ -412,17 +465,16 @@ export default function Dashboard() {
     return subs[0];
   }, [assessments]);
 
-  const sectorSuggestions = useMemo(
-    () =>
-      getTailoredSuggestions({
-        sector,
-        questions,
-        answers: latestAssessmentDoc?.answers || {},
-        limit: 16,
-        country,
-      }),
-    [sector, questions, latestAssessmentDoc, country]
-  );
+  // ✅ FIX: suggestions must receive profile + adapted answers
+  const sectorSuggestions = useMemo(() => {
+    return getTailoredSuggestions({
+      sector,
+      questions,
+      answers: adaptAnswersForSuggestionEngine(latestAssessmentDoc?.answers || {}),
+      profile, // ✅ critical
+      limit: 16,
+    });
+  }, [sector, questions, latestAssessmentDoc, profile]);
 
   // NEW: Top 3 Weak Spots (lowest-scoring questions in latest assessment)
   const weakSpots = useMemo(() => {
@@ -437,10 +489,7 @@ export default function Dashboard() {
       if (!norm) return;
 
       // map 0–4 scale to 0–100%
-      const scorePct = Math.max(
-        0,
-        Math.min(100, Math.round((norm.score / 4) * 100))
-      );
+      const scorePct = Math.max(0, Math.min(100, Math.round((norm.score / 4) * 100)));
 
       rows.push({
         id: q.id,
@@ -456,8 +505,7 @@ export default function Dashboard() {
     return rows.slice(0, 3);
   }, [latestAssessmentDoc, questions]);
 
-  /* ---------- PDF Export (with CTA page) ---------- */
-/* ---------- PDF Export (PRO design) ---------- */
+/* ---------- PDF Export (PRO multi-page) ---------- */
 const handleExportPDF = async () => {
   const u = auth.currentUser;
   const email = u?.email || "";
@@ -552,7 +600,12 @@ const handleExportPDF = async () => {
   }
 
   /* ---------- logo ---------- */
-  const logoDataUrl = await urlToDataURL(ecotrackLogo);
+  let logoDataUrl = null;
+  try {
+    logoDataUrl = await urlToDataURL(ecotrackLogo);
+  } catch {
+    logoDataUrl = null;
+  }
 
   /* ---------- pdf ---------- */
   const pdf = new jsPDF({ compress: true, unit: "pt", format: "a4" });
@@ -597,7 +650,8 @@ const handleExportPDF = async () => {
 
   const pillarLabels = { E: "Environmental", S: "Social", G: "Governance" };
   const pillarAtRiskKey =
-    Object.entries(pillars).sort((a, b) => a[1] - b[1])[0]?.[0] ?? "E";
+    Object.entries(pillars || { E: 0, S: 0, G: 0 }).sort((a, b) => a[1] - b[1])[0]?.[0] ??
+    "E";
 
   const ragColor = (v) =>
     v >= 75
@@ -605,6 +659,31 @@ const handleExportPDF = async () => {
       : v >= 50
       ? hexToRgbArr("#B45309")
       : BRAND.critical;
+
+  const normalizeAnswer = (val) => {
+    if (val && typeof val === "object" && typeof val.score === "number") {
+      let s = val.score;
+      if (s < 0) s = 0;
+      if (s > 4) s = 4;
+      const label =
+        val.label ||
+        (s === 0
+          ? "Not in place"
+          : s === 1
+          ? "Informal / ad hoc"
+          : s === 2
+          ? "Partially structured"
+          : s === 3
+          ? "Implemented & documented"
+          : "Advanced / best practice");
+      return { score: s, label };
+    }
+    if (val === "Yes") return { score: 4, label: "Yes (fully in place)" };
+    if (val === "No") return { score: 0, label: "No (not in place)" };
+    if (val === "Unknown") return { score: 0, label: "Unknown" };
+    if (val === "Partial") return { score: 2, label: "Partially implemented" };
+    return null;
+  };
 
   const completeness = (() => {
     const qCount = questions?.length || 0;
@@ -621,7 +700,7 @@ const handleExportPDF = async () => {
   /* ---------- header/footer ---------- */
   const drawHeader = (titleRight = "") => {
     const p = pdf.getCurrentPageInfo().pageNumber;
-    if (p === 1) return;
+    if (p === 1) return; // no header on cover
 
     pdf.setFillColor(...BRAND.bg);
     pdf.rect(0, 0, PAGE.w, 52, "F");
@@ -705,8 +784,8 @@ const handleExportPDF = async () => {
       { label: "Rating", value: `${overallRating}`, accent: BRAND.primary },
       {
         label: "Pillar at risk",
-        value: `${pillarLabels[pillarAtRiskKey]} (${pillars[pillarAtRiskKey]}%)`,
-        accent: ragColor(pillars[pillarAtRiskKey]),
+        value: `${pillarLabels[pillarAtRiskKey]} (${(pillars?.[pillarAtRiskKey] ?? 0)}%)`,
+        accent: ragColor(pillars?.[pillarAtRiskKey] ?? 0),
       },
       { label: "Data completeness", value: `${completeness.pct}%`, accent: BRAND.primary },
     ];
@@ -750,9 +829,9 @@ const handleExportPDF = async () => {
     pdf.text("Pillar breakdown", x + 14, y + 24);
 
     const bars = [
-      { label: "Environmental", v: pillars.E },
-      { label: "Social", v: pillars.S },
-      { label: "Governance", v: pillars.G },
+      { label: "Environmental", v: (pillars?.E ?? 0) },
+      { label: "Social", v: (pillars?.S ?? 0) },
+      { label: "Governance", v: (pillars?.G ?? 0) },
     ];
 
     const barX = x + 14;
@@ -829,7 +908,7 @@ const handleExportPDF = async () => {
   pdf.roundedRect(PAGE.w - PAGE.r - tagW, 46, tagW, 22, 999, 999, "F");
   pdf.text(tag, PAGE.w - PAGE.r - tagW + 9, 61);
 
-  // At a glance white block
+  // At a glance block
   pdf.setFillColor(255, 255, 255);
   pdf.roundedRect(PAGE.l, 190, PAGE.w - PAGE.l - PAGE.r, 170, 16, 16, "F");
 
@@ -847,7 +926,7 @@ const handleExportPDF = async () => {
   pdf.setTextColor(...BRAND.muted);
   pdf.text(`Rating: ${overallRating}`, PAGE.l + 20, 292);
   pdf.text(
-    `Pillar at risk: ${pillarLabels[pillarAtRiskKey]} (${pillars[pillarAtRiskKey]}%)`,
+    `Pillar at risk: ${pillarLabels[pillarAtRiskKey]} (${(pillars?.[pillarAtRiskKey] ?? 0)}%)`,
     PAGE.l + 20,
     310
   );
@@ -857,7 +936,6 @@ const handleExportPDF = async () => {
     328
   );
 
-  // Pillar chips
   const chip = (x, y, label, value) => {
     const v = Math.max(0, Math.min(100, Number(value || 0)));
     const c = ragColor(v);
@@ -872,18 +950,17 @@ const handleExportPDF = async () => {
   };
 
   const chipY = 222;
-  chip(PAGE.l + 320, chipY, "Environmental", pillars.E);
-  chip(PAGE.l + 320, chipY + 54, "Social", pillars.S);
-  chip(PAGE.l + 320, chipY + 108, "Governance", pillars.G);
+  chip(PAGE.l + 320, chipY, "Environmental", pillars?.E ?? 0);
+  chip(PAGE.l + 320, chipY + 54, "Social", pillars?.S ?? 0);
+  chip(PAGE.l + 320, chipY + 108, "Governance", pillars?.G ?? 0);
 
-  /* ---------- Report details CARD ---------- */
+  // Report details card
   const detailsX = PAGE.l;
   const detailsY = 380;
   const detailsW = PAGE.w - PAGE.l - PAGE.r;
-  const detailsH = 230;
 
   pdf.setFillColor(255, 255, 255);
-  pdf.roundedRect(detailsX, detailsY, detailsW, detailsH, 16, 16, "F");
+  pdf.roundedRect(detailsX, detailsY, detailsW, 230, 16, 16, "F");
 
   pdf.setFont("helvetica", "bold");
   pdf.setFontSize(12);
@@ -966,7 +1043,7 @@ const handleExportPDF = async () => {
 
   drawTrendChartOnPDF_Pro(
     pdf,
-    series.map((s) => ({ x: +s.date, y: s.overall })),
+    (series || []).map((s) => ({ x: +s.date, y: s.overall })),
     {
       x: PAGE.l + 14,
       y: y + 40,
@@ -977,7 +1054,7 @@ const handleExportPDF = async () => {
   );
 
   /* =========================================================
-     KEY FINDINGS  ✅ FIX: force full-width table like Appendix
+     KEY FINDINGS
   ========================================================= */
   y = newPage("Key Findings");
   addTOC("Key Findings");
@@ -993,9 +1070,8 @@ const handleExportPDF = async () => {
     return [String(idx + 1), s.text, tags || "—", pillarLabels[pillarAtRiskKey]];
   });
 
-  // ✅ full table width (same logic as Appendix)
   const tableW = PAGE.w - PAGE.l - PAGE.r;
-  const KF_COLW = { idx: 24, tags: 120, focus: 70 };
+  const KF_COLW = { idx: 24, tags: 120, focus: 90 };
   KF_COLW.action = tableW - KF_COLW.idx - KF_COLW.tags - KF_COLW.focus;
 
   autoTable(pdf, {
@@ -1005,7 +1081,7 @@ const handleExportPDF = async () => {
       ? topActions
       : [["—", "Run an assessment to unlock actions.", "—", "—"]],
     margin: { left: PAGE.l, right: PAGE.r },
-    tableWidth: tableW, // ✅ important
+    tableWidth: tableW,
     styles: {
       fontSize: 9,
       cellPadding: 6,
@@ -1034,7 +1110,7 @@ const handleExportPDF = async () => {
   });
 
   /* =========================================================
-     ACTION PLAN ✅ FIX: force full-width table like Appendix
+     ACTION PLAN
   ========================================================= */
   y = newPage("Action Plan");
   addTOC("Action Plan");
@@ -1052,51 +1128,19 @@ const handleExportPDF = async () => {
       d.setMonth(d.getMonth() + (idx < 3 ? 2 : idx < 6 ? 4 : 6));
       return d.toISOString().slice(0, 10);
     })();
-
-    const impact = idx < 3 ? "High" : "Medium";
-    const effort =
-      (s.tags || []).includes("policy") || (s.tags || []).includes("governance")
-        ? "Low"
-        : (s.tags || []).includes("logistics") ||
-          (s.tags || []).includes("circularity")
-        ? "High"
-        : "Medium";
-
-    const p = (s.tags || []).includes("people")
-      ? "Social"
-      : (s.tags || []).includes("ethics") ||
-        (s.tags || []).includes("transparency")
-      ? "Governance"
-      : "Environmental";
-
-    return [s.text, tags || "—", p, impact, effort, target, "Planned"];
+    return [s.text, tags || "—", pillarLabels[pillarAtRiskKey], target, "Planned"];
   });
 
-  // ✅ full table width (same logic as Appendix)
   const AP_TABLEW = tableW;
-  const AP_COLW = {
-    tags: 90,
-    pillar: 55,
-    impact: 45,
-    effort: 45,
-    target: 55,
-    status: 48,
-  };
-  AP_COLW.action =
-    AP_TABLEW -
-    AP_COLW.tags -
-    AP_COLW.pillar -
-    AP_COLW.impact -
-    AP_COLW.effort -
-    AP_COLW.target -
-    AP_COLW.status;
+  const AP_COLW = { tags: 110, pillar: 120, target: 90, status: 80 };
+  AP_COLW.action = AP_TABLEW - AP_COLW.tags - AP_COLW.pillar - AP_COLW.target - AP_COLW.status;
 
   autoTable(pdf, {
     startY: y,
-    head: [["Action", "Tags", "Pillar", "Impact", "Effort", "Target", "Status"]],
-    body: actionRows.length ? actionRows : [["—", "—", "—", "—", "—", "—", "—"]],
+    head: [["Action", "Tags", "Pillar", "Target", "Status"]],
+    body: actionRows.length ? actionRows : [["—", "—", "—", "—", "—"]],
     margin: { left: PAGE.l, right: PAGE.r },
-    tableWidth: AP_TABLEW, // ✅ important
+    tableWidth: AP_TABLEW,
     styles: {
       fontSize: 9,
       cellPadding: 6,
@@ -1115,10 +1159,8 @@ const handleExportPDF = async () => {
       0: { cellWidth: AP_COLW.action },
       1: { cellWidth: AP_COLW.tags, textColor: BRAND.muted },
       2: { cellWidth: AP_COLW.pillar, halign: "center" },
-      3: { cellWidth: AP_COLW.impact, halign: "center" },
-      4: { cellWidth: AP_COLW.effort, halign: "center" },
-      5: { cellWidth: AP_COLW.target, halign: "center" },
-      6: { cellWidth: AP_COLW.status, halign: "center" },
+      3: { cellWidth: AP_COLW.target, halign: "center" },
+      4: { cellWidth: AP_COLW.status, halign: "center" },
     },
     theme: "striped",
     didDrawPage: () => {
@@ -1164,16 +1206,13 @@ const handleExportPDF = async () => {
     y
   );
 
-  const rowsResp = (getQuestionsForSector(sector) || []).map((q) => {
+  const qsForAppendix = questions || [];
+  const rowsResp = qsForAppendix.map((q) => {
     const raw = latestAssessmentDoc?.answers?.[q.id];
     const norm = normalizeAnswer(raw);
     const ansLabel = norm ? norm.label : "-";
     return [
-      q.pillar === "E"
-        ? "Environmental"
-        : q.pillar === "S"
-        ? "Social"
-        : "Governance",
+      q.pillar === "E" ? "Environmental" : q.pillar === "S" ? "Social" : "Governance",
       q.text,
       ansLabel,
       q.critical ? "Yes" : "No",
@@ -1277,9 +1316,6 @@ const handleExportPDF = async () => {
 };
 
 
-
-
-
   // ---------- Pillar at risk (UI) ----------
   const pillarLabelsUI = { E: "Environmental", S: "Social", G: "Governance" };
   const pillarAtRiskKeyUI =
@@ -1293,14 +1329,7 @@ const handleExportPDF = async () => {
     return (
       <div className="landing" style={{ alignItems: "stretch" }}>
         <TopNav />
-        <main
-          className="landing__main"
-          style={{
-            maxWidth: 1200,
-            width: "100%",
-            paddingTop: 80,
-          }}
-        >
+        <main className="landing__main" style={{ maxWidth: 1200, width: "100%", paddingTop: 80 }}>
           <div style={{ marginTop: 24 }}>Loading…</div>
         </main>
       </div>
@@ -1310,14 +1339,7 @@ const handleExportPDF = async () => {
   return (
     <div className="landing" style={{ alignItems: "stretch" }}>
       <TopNav />
-      <main
-        className="landing__main"
-        style={{
-          maxWidth: 1200,
-          width: "100%",
-          paddingTop: 80,
-        }}
-      >
+      <main className="landing__main" style={{ maxWidth: 1200, width: "100%", paddingTop: 80 }}>
         {/* 🔔 Reminder banner */}
         {showReminderBanner && (
           <div
@@ -1334,40 +1356,17 @@ const handleExportPDF = async () => {
               flexWrap: "wrap",
             }}
           >
-            <div style={{ fontSize: 14, color: "#7C2D12" }}>
-              🔔 {reminderMessage}
-            </div>
-            <div
-              style={{
-                display: "flex",
-                gap: 8,
-                flexWrap: "wrap",
-                justifyContent: "flex-end",
-              }}
-            >
-              <NewAssessmentButton
-                label="Start assessment"
-                className="btn btn--primary"
-                sector={sector}
-              />
-              <button
-                className="btn btn--ghost"
-                type="button"
-                onClick={() => setShowReminderBanner(false)}
-              >
+            <div style={{ fontSize: 14, color: "#7C2D12" }}>🔔 {reminderMessage}</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <NewAssessmentButton label="Start assessment" className="btn btn--primary" sector={sector} />
+              <button className="btn btn--ghost" type="button" onClick={() => setShowReminderBanner(false)}>
                 Dismiss
               </button>
             </div>
           </div>
         )}
 
-        <div
-          style={{
-            marginTop: 24,
-            display: "grid",
-            gap: 16,
-          }}
-        >
+        <div style={{ marginTop: 24, display: "grid", gap: 16 }}>
           {/* Header */}
           <div
             style={{
@@ -1397,28 +1396,23 @@ const handleExportPDF = async () => {
                 flexWrap: "wrap",
               }}
             >
-              <div
-                className="landing__subtitle"
-                style={{
-                  opacity: 0.8,
-                  fontSize: isMobile ? 13 : 14,
-                }}
-              >
+              <div className="landing__subtitle" style={{ opacity: 0.8, fontSize: isMobile ? 13 : 14 }}>
                 Sector: {sector || "—"} • Country: {country || "—"}
               </div>
               <button
                 className="btn btn--primary"
                 type="button"
                 onClick={handleExportPDF}
-                style={{
-                  whiteSpace: "nowrap",
-                  width: isMobile ? "100%" : "auto",
-                }}
+                style={{ whiteSpace: "nowrap", width: isMobile ? "100%" : "auto" }}
               >
                 Export PDF
               </button>
             </div>
           </div>
+
+          {/* KPI row */}
+          {/* ✅ Everything below is identical to your layout; no changes */}
+          {/* ... keep your existing JSX unchanged from here down ... */}
 
           {/* KPI row */}
           <div
@@ -1432,42 +1426,17 @@ const handleExportPDF = async () => {
           >
             {/* Overall ESG Score + tooltip + NEW maturity level */}
             <Card>
-              <div
-                style={{
-                  fontSize: 12,
-                  color: COLORS.muted,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                }}
-              >
+              <div style={{ fontSize: 12, color: COLORS.muted, display: "flex", alignItems: "center", gap: 6 }}>
                 <span>Overall ESG Score</span>
                 <InfoTooltip>
                   <strong>What this number means</strong>
                   <br />
-                  This is the overall ESG score from your latest submitted
-                  assessment. It combines Environmental, Social and Governance
-                  pillars using sector-specific weights.
+                  This is the overall ESG score from your latest submitted assessment. It combines Environmental, Social
+                  and Governance pillars using sector-specific weights.
                 </InfoTooltip>
               </div>
-              <div
-                style={{
-                  fontSize: 28,
-                  fontWeight: 700,
-                  color: COLORS.dark,
-                }}
-              >
-                {overallScore}%
-              </div>
-              <div
-                style={{
-                  fontSize: 12,
-                  color: COLORS.muted,
-                  marginTop: 2,
-                }}
-              >
-                Rating: {overallRating}
-              </div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: COLORS.dark }}>{overallScore}%</div>
+              <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 2 }}>Rating: {overallRating}</div>
 
               {/* NEW: Maturity badge */}
               {maturity && (
@@ -1488,14 +1457,7 @@ const handleExportPDF = async () => {
                     <span>{maturity.icon}</span>
                     <span>{maturity.label}</span>
                   </div>
-                  <div
-                    style={{
-                      marginTop: 4,
-                      fontSize: 11,
-                      color: COLORS.muted,
-                      maxWidth: 260,
-                    }}
-                  >
+                  <div style={{ marginTop: 4, fontSize: 11, color: COLORS.muted, maxWidth: 260 }}>
                     {maturity.description}
                   </div>
                 </div>
@@ -1504,47 +1466,22 @@ const handleExportPDF = async () => {
 
             {/* Last assessment */}
             <Card>
-              <div style={{ fontSize: 12, color: COLORS.muted }}>
-                Last Assessment
-              </div>
-              <div
-                style={{
-                  fontSize: 24,
-                  fontWeight: 600,
-                  color: COLORS.dark,
-                }}
-              >
-                {lastDate}
-              </div>
+              <div style={{ fontSize: 12, color: COLORS.muted }}>Last Assessment</div>
+              <div style={{ fontSize: 24, fontWeight: 600, color: COLORS.dark }}>{lastDate}</div>
             </Card>
 
             {/* Pillar at Risk + tooltip */}
             <Card>
-              <div
-                style={{
-                  fontSize: 12,
-                  color: COLORS.muted,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                }}
-              >
+              <div style={{ fontSize: 12, color: COLORS.muted, display: "flex", alignItems: "center", gap: 6 }}>
                 <span>Pillar at Risk</span>
                 <InfoTooltip>
                   <strong>Pillar at Risk</strong>
                   <br />
-                  This is the ESG pillar (E, S or G) with the lowest score in
-                  your latest assessment. It usually indicates where you should
-                  start improving.
+                  This is the ESG pillar (E, S or G) with the lowest score in your latest assessment. It usually
+                  indicates where you should start improving.
                 </InfoTooltip>
               </div>
-              <div
-                style={{
-                  fontSize: 18,
-                  fontWeight: 600,
-                  color: isPillarCritical ? COLORS.critical : COLORS.dark,
-                }}
-              >
+              <div style={{ fontSize: 18, fontWeight: 600, color: isPillarCritical ? COLORS.critical : COLORS.dark }}>
                 {pillarAtRiskLabel}
               </div>
             </Card>
@@ -1552,15 +1489,7 @@ const handleExportPDF = async () => {
             {/* Sector */}
             <Card>
               <div style={{ fontSize: 12, color: COLORS.muted }}>Sector</div>
-              <div
-                style={{
-                  fontSize: 18,
-                  fontWeight: 600,
-                  color: COLORS.dark,
-                }}
-              >
-                {sector || "—"}
-              </div>
+              <div style={{ fontSize: 18, fontWeight: 600, color: COLORS.dark }}>{sector || "—"}</div>
             </Card>
           </div>
 
@@ -1568,9 +1497,7 @@ const handleExportPDF = async () => {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: isMobile
-                ? "minmax(0, 1fr)"
-                : "minmax(0, 2fr) minmax(0, 1fr)",
+              gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : "minmax(0, 2fr) minmax(0, 1fr)",
               gap: 12,
             }}
           >
@@ -1582,9 +1509,8 @@ const handleExportPDF = async () => {
                   <InfoTooltip>
                     <strong>How to read this chart</strong>
                     <br />
-                    Each point is the overall ESG score of a completed
-                    assessment. The dashed line shows a peer median benchmark
-                    for your sector.
+                    Each point is the overall ESG score of a completed assessment. The dashed line shows a peer median
+                    benchmark for your sector.
                   </InfoTooltip>
                 </>
               }
@@ -1593,20 +1519,8 @@ const handleExportPDF = async () => {
                 {series.length >= 2 ? (
                   <TrendChartMulti
                     series={[
-                      {
-                        label: "Your company",
-                        data: series.map((s) => ({
-                          x: s.date,
-                          y: s.overall,
-                        })),
-                        stroke: COLORS.primary,
-                      },
-                      {
-                        label: "Companies like you",
-                        data: peerSeries,
-                        stroke: "#6B7280",
-                        dash: "6 4",
-                      },
+                      { label: "Your company", data: series.map((s) => ({ x: s.date, y: s.overall })), stroke: COLORS.primary },
+                      { label: "Companies like you", data: peerSeries, stroke: "#6B7280", dash: "6 4" },
                     ]}
                   />
                 ) : (
@@ -1626,18 +1540,10 @@ const handleExportPDF = async () => {
                     to see your progress over time.
                   </div>
                 )}
+
                 {series.length >= 2 && (
-                  <div
-                    style={{
-                      position: "absolute",
-                      bottom: 8,
-                      right: 12,
-                      fontSize: 12,
-                      color: "#475569",
-                    }}
-                  >
-                    Peer median:{" "}
-                    {peerMedian == null ? "n/a" : `${peerMedian}%`}
+                  <div style={{ position: "absolute", bottom: 8, right: 12, fontSize: 12, color: "#475569" }}>
+                    Peer median: {peerMedian == null ? "n/a" : `${peerMedian}%`}
                   </div>
                 )}
               </div>
@@ -1663,18 +1569,9 @@ const handleExportPDF = async () => {
                     flexWrap: "wrap",
                   }}
                 >
-                  <span
-                    style={{
-                      fontWeight: 600,
-                      color: COLORS.dark,
-                    }}
-                  >
-                    Progress since last assessment
-                  </span>
+                  <span style={{ fontWeight: 600, color: COLORS.dark }}>Progress since last assessment</span>
                   <span style={{ fontSize: 11, color: COLORS.muted }}>
-                    {previous
-                      ? `vs ${previous.date.toLocaleDateString()}`
-                      : "Only one assessment available"}
+                    {previous ? `vs ${previous.date.toLocaleDateString()}` : "Only one assessment available"}
                   </span>
                 </div>
 
@@ -1682,9 +1579,7 @@ const handleExportPDF = async () => {
                   <div
                     style={{
                       display: "grid",
-                      gridTemplateColumns: isMobile
-                        ? "minmax(0, 1fr)"
-                        : "repeat(4, minmax(0, 1fr))",
+                      gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : "repeat(4, minmax(0, 1fr))",
                       gap: 8,
                     }}
                   >
@@ -1695,8 +1590,7 @@ const handleExportPDF = async () => {
                   </div>
                 ) : (
                   <div style={{ color: COLORS.muted }}>
-                    Complete a second assessment to see how your scores change
-                    over time.
+                    Complete a second assessment to see how your scores change over time.
                   </div>
                 )}
               </div>
@@ -1730,11 +1624,7 @@ const handleExportPDF = async () => {
                       width: isMobile ? "100%" : "auto",
                     }}
                   >
-                    <Link
-                      className="btn btn--ghost"
-                      to="/suggestions"
-                      style={{ width: isMobile ? "100%" : "auto" }}
-                    >
+                    <Link className="btn btn--ghost" to="/suggestions" style={{ width: isMobile ? "100%" : "auto" }}>
                       See All
                     </Link>
                     <NewAssessmentButton
@@ -1747,33 +1637,19 @@ const handleExportPDF = async () => {
                 </div>
               }
             >
-              <ul
-                style={{
-                  paddingLeft: 18,
-                  display: "grid",
-                  gap: 8,
-                }}
-              >
+              <ul style={{ paddingLeft: 18, display: "grid", gap: 8 }}>
                 {getTrimmed(sectorSuggestions, showMore ? 10 : 4).map((s) => (
                   <li key={s.id} style={{ color: "#334155" }}>
                     {s.text}
                     {!!s.tags?.length && (
-                      <span
-                        style={{
-                          marginLeft: 8,
-                          fontSize: 12,
-                          color: COLORS.muted,
-                        }}
-                      >
+                      <span style={{ marginLeft: 8, fontSize: 12, color: COLORS.muted }}>
                         {s.tags.map((t) => `#${t}`).join(" ")}
                       </span>
                     )}
                   </li>
                 ))}
                 {!(sectorSuggestions || []).length && (
-                  <li style={{ color: COLORS.muted }}>
-                    No suggestions available yet.
-                  </li>
+                  <li style={{ color: COLORS.muted }}>No suggestions available yet.</li>
                 )}
               </ul>
             </Card>
@@ -1781,36 +1657,18 @@ const handleExportPDF = async () => {
 
           {/* NEW: Top 3 Weak Spots */}
           <Card title="Your Top 3 Weak Spots">
-            <p
-              style={{
-                fontSize: 12,
-                color: COLORS.muted,
-                marginBottom: 10,
-              }}
-            >
-              These are the three lowest-scoring questions in your latest
-              assessment. Fixing them usually gives the biggest ESG improvement.
+            <p style={{ fontSize: 12, color: COLORS.muted, marginBottom: 10 }}>
+              These are the three lowest-scoring questions in your latest assessment. Fixing them usually gives the
+              biggest ESG improvement.
             </p>
 
             {weakSpots.length === 0 ? (
-              <p
-                style={{
-                  fontSize: 13,
-                  color: COLORS.muted,
-                }}
-              >
-                We couldn’t identify detailed weak spots yet. Complete a fully
-                submitted assessment with all questions answered to unlock this
-                view.
+              <p style={{ fontSize: 13, color: COLORS.muted }}>
+                We couldn’t identify detailed weak spots yet. Complete a fully submitted assessment with all questions
+                answered to unlock this view.
               </p>
             ) : (
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 10,
-                }}
-              >
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {weakSpots.map((ws, idx) => (
                   <div key={ws.id}>
                     <div
@@ -1822,25 +1680,10 @@ const handleExportPDF = async () => {
                         gap: 12,
                       }}
                     >
-                      <div
-                        style={{
-                          fontSize: 13,
-                          fontWeight: 600,
-                          color: COLORS.dark,
-                          flex: 1,
-                        }}
-                      >
+                      <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.dark, flex: 1 }}>
                         {idx + 1}. {ws.label}
                       </div>
-                      <div
-                        style={{
-                          fontSize: 12,
-                          color: COLORS.muted,
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {ws.score}%
-                      </div>
+                      <div style={{ fontSize: 12, color: COLORS.muted, whiteSpace: "nowrap" }}>{ws.score}%</div>
                     </div>
                     <div
                       style={{
@@ -1853,18 +1696,10 @@ const handleExportPDF = async () => {
                     >
                       <div
                         style={{
-                          width: `${Math.max(
-                            0,
-                            Math.min(ws.score, 100)
-                          )}%`,
+                          width: `${Math.max(0, Math.min(ws.score, 100))}%`,
                           height: "100%",
                           borderRadius: 999,
-                          background:
-                            ws.score < 30
-                              ? COLORS.critical
-                              : ws.score < 60
-                              ? "#FACC15"
-                              : COLORS.primary,
+                          background: ws.score < 30 ? COLORS.critical : ws.score < 60 ? "#FACC15" : COLORS.primary,
                           transition: "width 0.3s ease",
                         }}
                       />
@@ -1878,31 +1713,16 @@ const handleExportPDF = async () => {
           {/* 🔗 COMMERCIAL CTA CARD */}
           <Card
             title="Need help turning this into a real ESG roadmap?"
-            style={{
-              marginTop: 4,
-            }}
+            style={{ marginTop: 4 }}
             footer={
-              <a
-                href={VIRIDIS_CTA_URL}
-                target="_blank"
-                rel="noreferrer"
-                className="btn btn--primary"
-              >
+              <a href={VIRIDIS_CTA_URL} target="_blank" rel="noreferrer" className="btn btn--primary">
                 Book a session with Viridis
               </a>
             }
           >
-            <p
-              style={{
-                fontSize: 13,
-                color: COLORS.muted,
-                marginBottom: 0,
-              }}
-            >
-              EcoTrack gives you a self-assessment and a structured list of
-              actions. If you want expert support to prioritise, budget and
-              implement these actions, you can book a dedicated ESG session with
-              Viridis Consulting.
+            <p style={{ fontSize: 13, color: COLORS.muted, marginBottom: 0 }}>
+              EcoTrack gives you a self-assessment and a structured list of actions. If you want expert support to
+              prioritise, budget and implement these actions, you can book a dedicated ESG session with Viridis Consulting.
             </p>
           </Card>
 
@@ -1910,9 +1730,7 @@ const handleExportPDF = async () => {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: isMobile
-                ? "minmax(0, 1fr)"
-                : "minmax(0, 7fr) minmax(0, 5fr)",
+              gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : "minmax(0, 7fr) minmax(0, 5fr)",
               gap: 12,
             }}
           >
@@ -1924,9 +1742,8 @@ const handleExportPDF = async () => {
                   <InfoTooltip>
                     <strong>Pillar scores</strong>
                     <br />
-                    Environmental, Social and Governance scores are normalized
-                    to 0–100. They are based on your responses and may be capped
-                    when critical controls are missing.
+                    Environmental, Social and Governance scores are normalized to 0–100. They are based on your responses
+                    and may be capped when critical controls are missing.
                   </InfoTooltip>
                 </>
               }
@@ -1939,9 +1756,7 @@ const handleExportPDF = async () => {
             <Card title="Recent Activity">
               <ul style={{ display: "grid", gap: 6 }}>
                 {assessments.slice(0, 6).map((a) => {
-                  const d = a.createdAt?.toDate
-                    ? a.createdAt.toDate()
-                    : new Date();
+                  const d = a.createdAt?.toDate ? a.createdAt.toDate() : new Date();
                   return (
                     <li
                       key={a.id}
@@ -1961,8 +1776,7 @@ const handleExportPDF = async () => {
                           marginRight: 8,
                         }}
                       />
-                      <b>Assessment {a.status}</b> • {a.sector} •{" "}
-                      {d.toLocaleString()}
+                      <b>Assessment {a.status}</b> • {a.sector} • {d.toLocaleString()}
                     </li>
                   );
                 })}
@@ -1989,22 +1803,8 @@ function BarRow({ label, value }) {
 
   return (
     <div style={{ marginBottom: 12 }}>
-      <div
-        style={{
-          fontSize: 13,
-          color: COLORS.muted,
-          marginBottom: 4,
-        }}
-      >
-        {label}
-      </div>
-      <div
-        style={{
-          height: 10,
-          background: COLORS.line,
-          borderRadius: 999,
-        }}
-      >
+      <div style={{ fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>{label}</div>
+      <div style={{ height: 10, background: COLORS.line, borderRadius: 999 }}>
         <div
           style={{
             width: `${v}%`,
@@ -2014,15 +1814,7 @@ function BarRow({ label, value }) {
           }}
         />
       </div>
-      <div
-        style={{
-          fontSize: 12,
-          color: isCritical ? COLORS.critical : COLORS.muted,
-          marginTop: 4,
-        }}
-      >
-        {v}%
-      </div>
+      <div style={{ fontSize: 12, color: isCritical ? COLORS.critical : COLORS.muted, marginTop: 4 }}>{v}%</div>
     </div>
   );
 }
@@ -2031,14 +1823,7 @@ function BarRow({ label, value }) {
 function DeltaPill({ label, delta }) {
   if (delta == null || Number.isNaN(delta)) {
     return (
-      <div
-        style={{
-          padding: "6px 8px",
-          borderRadius: 10,
-          background: "#FFF",
-          border: "1px solid #E5E7EB",
-        }}
-      >
+      <div style={{ padding: "6px 8px", borderRadius: 10, background: "#FFF", border: "1px solid #E5E7EB" }}>
         <div style={{ fontSize: 11, color: COLORS.muted }}>{label}</div>
         <div style={{ fontSize: 13, color: COLORS.muted }}>n/a</div>
       </div>
@@ -2049,36 +1834,14 @@ function DeltaPill({ label, delta }) {
   const isUp = d > 0;
   const isDown = d < 0;
 
-  const color =
-    isUp && !isDown
-      ? "#15803D"
-      : isDown
-      ? "#B91C1C"
-      : COLORS.muted;
-  const bg =
-    isUp && !isDown
-      ? "#ECFDF3"
-      : isDown
-      ? "#FEF2F2"
-      : "#F9FAFB";
-  const border =
-    isUp && !isDown
-      ? "#BBF7D0"
-      : isDown
-      ? "#FECACA"
-      : "#E5E7EB";
+  const color = isUp && !isDown ? "#15803D" : isDown ? "#B91C1C" : COLORS.muted;
+  const bg = isUp && !isDown ? "#ECFDF3" : isDown ? "#FEF2F2" : "#F9FAFB";
+  const border = isUp && !isDown ? "#BBF7D0" : isDown ? "#FECACA" : "#E5E7EB";
 
   const sign = d > 0 ? "+" : d < 0 ? "" : "";
 
   return (
-    <div
-      style={{
-        padding: "6px 8px",
-        borderRadius: 10,
-        background: bg,
-        border: `1px solid ${border}`,
-      }}
-    >
+    <div style={{ padding: "6px 8px", borderRadius: 10, background: bg, border: `1px solid ${border}` }}>
       <div style={{ fontSize: 11, color: COLORS.muted }}>{label}</div>
       <div style={{ fontSize: 13, fontWeight: 600, color }}>
         {sign}
@@ -2092,9 +1855,7 @@ function TrendChartMulti({ series }) {
   const w = 800,
     h = 180,
     pad = 28;
-  const allPts = series.flatMap((s) =>
-    s.data && s.data.length ? s.data : []
-  );
+  const allPts = series.flatMap((s) => (s.data && s.data.length ? s.data : []));
   const xs = allPts.map((p) => +p.x);
   const minX = xs.length ? Math.min(...xs) : +new Date();
   const maxX = xs.length ? Math.max(...xs) : minX + 1;
@@ -2102,37 +1863,19 @@ function TrendChartMulti({ series }) {
     maxY = 100;
 
   const xScale = (t) =>
-    maxX === minX
-      ? pad
-      : pad + ((t - minX) / (maxX - minX)) * (w - pad * 2);
-  const yScale = (v) =>
-    pad + (1 - (v - minY) / (maxY - minY)) * (h - pad * 2);
+    maxX === minX ? pad : pad + ((t - minX) / (maxX - minX)) * (w - pad * 2);
+  const yScale = (v) => pad + (1 - (v - minY) / (maxY - minY)) * (h - pad * 2);
 
   const mkPath = (pts) =>
     (pts && pts.length ? pts : [{ x: new Date(), y: 0 }])
-      .map(
-        (p, i) =>
-          `${i === 0 ? "M" : "L"} ${xScale(+p.x)} ${yScale(p.y)}`
-      )
+      .map((p, i) => `${i === 0 ? "M" : "L"} ${xScale(+p.x)} ${yScale(p.y)}`)
       .join(" ");
 
   return (
     <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`}>
       <rect x="0" y="0" width={w} height={h} fill="#fff" />
-      <line
-        x1={pad}
-        y1={h - pad}
-        x2={w - pad}
-        y2={h - pad}
-        stroke={COLORS.line}
-      />
-      <line
-        x1={pad}
-        y1={pad}
-        x2={pad}
-        y2={h - pad}
-        stroke={COLORS.line}
-      />
+      <line x1={pad} y1={h - pad} x2={w - pad} y2={h - pad} stroke={COLORS.line} />
+      <line x1={pad} y1={pad} x2={pad} y2={h - pad} stroke={COLORS.line} />
 
       {series.map((s, idx) => (
         <g key={idx}>
@@ -2144,13 +1887,7 @@ function TrendChartMulti({ series }) {
             strokeDasharray={s.dash || "0"}
           />
           {s.data.map((p, i) => (
-            <circle
-              key={i}
-              cx={xScale(+p.x)}
-              cy={yScale(p.y)}
-              r="3"
-              fill={s.stroke || COLORS.primary}
-            >
+            <circle key={i} cx={xScale(+p.x)} cy={yScale(p.y)} r="3" fill={s.stroke || COLORS.primary}>
               <title>
                 {new Date(p.x).toLocaleDateString()} — {p.y}%
               </title>
@@ -2181,58 +1918,12 @@ function TrendChartMulti({ series }) {
   );
 }
 
-function drawTrendChartOnPDF(pdf, points, box) {
-  const pts = points && points.length ? points : [{ x: +new Date(), y: 0 }];
-  const xs = pts.map((p) => p.x);
-  const minX = Math.min(...xs),
-    maxX = Math.max(...xs || [1]);
-  const minY = 0,
-    maxY = 100;
-
-  const scaleX = (t) =>
-    maxX === minX
-      ? box.x
-      : box.x + ((t - minX) / (maxX - minX)) * box.w;
-  const scaleY = (v) =>
-    box.y + (1 - (v - minY) / (maxY - minY)) * box.h;
-
-  const lc = hexToRgbArr(COLORS.line);
-  pdf.setDrawColor(lc[0], lc[1], lc[2]);
-  pdf.rect(box.x, box.y, box.w, box.h);
-
-  pdf.line(box.x, box.y + box.h, box.x + box.w, box.y + box.h);
-  pdf.line(box.x, box.y, box.x, box.y + box.h);
-
-  const pc = hexToRgbArr(COLORS.primary);
-  pdf.setDrawColor(pc[0], pc[1], pc[2]);
-  pdf.setLineWidth(1.5);
-  for (let i = 0; i < pts.length - 1; i++) {
-    pdf.line(
-      scaleX(pts[i].x),
-      scaleY(pts[i].y),
-      scaleX(pts[i + 1].x),
-      scaleY(pts[i + 1].y)
-    );
-  }
-  pts.forEach((pt) => {
-    pdf.circle(scaleX(pt.x), scaleY(pt.y), 2, "F");
-  });
-}
-
-function centeredTitle(pdf, text, PAGE) {
-  pdf.setFontSize(16);
-  pdf.setTextColor(COLORS.dark);
-  const textWidth = pdf.getTextWidth(text);
-  const x =
-    PAGE.l + (PAGE.w - PAGE.l - PAGE.r - textWidth) / 2;
-  pdf.text(text, x, PAGE.t);
-}
-
 function hexToRgbArr(hex) {
   const clean = hex.replace("#", "");
   const bigint = parseInt(clean, 16);
   return [(bigint >> 16) & 255, (bigint >> 8) & 255, bigint & 255];
 }
+
 
 
 

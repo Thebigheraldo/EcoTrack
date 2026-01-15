@@ -11,9 +11,16 @@ const firebaseConfig = {
   projectId: "eco-track-1f465",
   storageBucket: "eco-track-1f465.firebasestorage.app",
   messagingSenderId: "702250111069",
-  appId: "YOUR_APP_I1:702250111069:web:09d11d01769673616e7db4D",
+  appId: "1:702250111069:web:09d11d01769673616e7db4",
   measurementId: "G-V2NLBSDM7D"
 };
+
+// Optional: crash early if missing (prevents silent broken prod deploys)
+Object.entries(firebaseConfig).forEach(([k, v]) => {
+  if (!v) {
+    throw new Error(`Missing Firebase env var for ${k}. Check your .env.local`);
+  }
+});
 
 const app = initializeApp(firebaseConfig);
 
