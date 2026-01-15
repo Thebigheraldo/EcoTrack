@@ -696,6 +696,17 @@ const handleExportPDF = async () => {
     const pct = Math.round((answered / qCount) * 100);
     return { answered, total: qCount, pct };
   })();
+  const para = (text, yy, maxWidth = PAGE.w - PAGE.l - PAGE.r, lineHeight = 12) => {
+  pdf.setFont("helvetica", "normal");
+  pdf.setFontSize(10);
+  pdf.setTextColor(...BRAND.ink);
+
+  const lines = pdf.splitTextToSize(String(text || ""), maxWidth);
+  pdf.text(lines, PAGE.l, yy);
+
+  return yy + lines.length * lineHeight + 10;
+};
+
 
   /* ---------- header/footer ---------- */
   const drawHeader = (titleRight = "") => {
@@ -774,103 +785,146 @@ const handleExportPDF = async () => {
     return y + 22;
   };
 
-  const drawKpiTiles = (y) => {
-    const gap = 10;
-    const tileW = (PAGE.w - PAGE.l - PAGE.r - gap * 3) / 4;
-    const tileH = 62;
+/* ---------- KPI tiles (safe text) ---------- */
+const drawKpiTiles = (y) => {
+  const gap = 10;
+  const tileW = (PAGE.w - PAGE.l - PAGE.r - gap * 3) / 4;
+  const tileH = 62;
 
-    const tiles = [
-      { label: "Overall Score", value: `${overallScore}%`, accent: BRAND.primary },
-      { label: "Rating", value: `${overallRating}`, accent: BRAND.primary },
-      {
-        label: "Pillar at risk",
-        value: `${pillarLabels[pillarAtRiskKey]} (${(pillars?.[pillarAtRiskKey] ?? 0)}%)`,
-        accent: ragColor(pillars?.[pillarAtRiskKey] ?? 0),
-      },
-      { label: "Data completeness", value: `${completeness.pct}%`, accent: BRAND.primary },
-    ];
-
-    tiles.forEach((t, i) => {
-      const x = PAGE.l + i * (tileW + gap);
-
-      pdf.setFillColor(255, 255, 255);
-      pdf.setDrawColor(...BRAND.line);
-      pdf.roundedRect(x, y, tileW, tileH, 10, 10, "FD");
-
-      pdf.setFillColor(...t.accent);
-      pdf.roundedRect(x, y, tileW, 6, 10, 10, "F");
-
-      pdf.setFont("helvetica", "normal");
-      pdf.setFontSize(9);
-      pdf.setTextColor(...BRAND.muted);
-      pdf.text(t.label, x + 12, y + 24);
-
-      pdf.setFont("helvetica", "bold");
-      pdf.setFontSize(16);
-      pdf.setTextColor(...BRAND.ink);
-      pdf.text(String(t.value), x + 12, y + 46);
-    });
-
-    return y + tileH + 14;
+  // shrink font until the text fits in one line
+  const fitFontToWidth = (txt, maxW, start = 14, min = 9) => {
+    let size = start;
+    pdf.setFont("helvetica", "bold");
+    while (size > min) {
+      pdf.setFontSize(size);
+      if (pdf.getTextWidth(txt) <= maxW) break;
+      size -= 1;
+    }
+    return size;
   };
 
-  const drawPillarBars = (y) => {
-    const boxH = 110;
-    const x = PAGE.l;
-    const w = PAGE.w - PAGE.l - PAGE.r;
+  // draw value so it NEVER spills outside the card
+  const drawValue = (value, x, baseY, maxW) => {
+    const str = String(value ?? "");
+    pdf.setFont("helvetica", "bold");
+    pdf.setTextColor(...BRAND.ink);
 
+    // 1) try wrap into 2 lines at a comfortable size
+    const preferred = 13;
+    pdf.setFontSize(preferred);
+    const lines = pdf.splitTextToSize(str, maxW);
+
+    if (lines.length <= 2) {
+      const use = lines.slice(0, 2);
+      const lineH = 13;
+      // if 2 lines, shift up a bit so both fit nicely
+      const startY = use.length === 1 ? baseY : baseY - 7;
+      use.forEach((ln, i) => pdf.text(ln, x, startY + i * lineH));
+      return;
+    }
+
+    // 2) otherwise keep one line and shrink
+    const size = fitFontToWidth(str, maxW, 13, 9);
+    pdf.setFontSize(size);
+    pdf.text(str, x, baseY);
+  };
+
+  const pillarLabels = { E: "Environmental", S: "Social", G: "Governance" };
+  const pillarAtRiskKey =
+    Object.entries(pillars || { E: 0, S: 0, G: 0 }).sort((a, b) => a[1] - b[1])[0]?.[0] ??
+    "E";
+
+  const tiles = [
+    { label: "Overall Score", value: `${overallScore}%`, accent: BRAND.primary },
+    { label: "Rating", value: `${overallRating}`, accent: BRAND.primary },
+    {
+      label: "Pillar at risk",
+      value: `${pillarLabels[pillarAtRiskKey]} (${(pillars?.[pillarAtRiskKey] ?? 0)}%)`,
+      accent: ragColor(pillars?.[pillarAtRiskKey] ?? 0),
+    },
+    { label: "Data completeness", value: `${completeness.pct}%`, accent: BRAND.primary },
+  ];
+
+  tiles.forEach((t, i) => {
+    const x = PAGE.l + i * (tileW + gap);
+
+    // card
     pdf.setFillColor(255, 255, 255);
     pdf.setDrawColor(...BRAND.line);
-    pdf.roundedRect(x, y, w, boxH, 12, 12, "FD");
+    pdf.roundedRect(x, y, tileW, tileH, 10, 10, "FD");
 
-    pdf.setFont("helvetica", "bold");
-    pdf.setFontSize(11);
-    pdf.setTextColor(...BRAND.ink);
-    pdf.text("Pillar breakdown", x + 14, y + 24);
+    // accent strip
+    pdf.setFillColor(...t.accent);
+    pdf.roundedRect(x, y, tileW, 6, 10, 10, "F");
 
-    const bars = [
-      { label: "Environmental", v: (pillars?.E ?? 0) },
-      { label: "Social", v: (pillars?.S ?? 0) },
-      { label: "Governance", v: (pillars?.G ?? 0) },
-    ];
-
-    const barX = x + 14;
-    const barW = w - 28;
-    let yy = y + 42;
-
-    bars.forEach((b) => {
-      const v = Math.max(0, Math.min(100, Number(b.v || 0)));
-      const c = ragColor(v);
-
-      pdf.setFont("helvetica", "normal");
-      pdf.setFontSize(9);
-      pdf.setTextColor(...BRAND.muted);
-      pdf.text(b.label, barX, yy);
-
-      pdf.setFillColor(...BRAND.line);
-      pdf.roundedRect(barX, yy + 8, barW, 8, 999, 999, "F");
-
-      pdf.setFillColor(...c);
-      pdf.roundedRect(barX, yy + 8, (barW * v) / 100, 8, 999, 999, "F");
-
-      pdf.setFont("helvetica", "bold");
-      pdf.setTextColor(...BRAND.ink);
-      pdf.text(`${v}%`, barX + barW - 24, yy);
-
-      yy += 26;
-    });
-
-    return y + boxH + 14;
-  };
-
-  const para = (t, yy) => {
+    // label
     pdf.setFont("helvetica", "normal");
-    pdf.setFontSize(10);
+    pdf.setFontSize(9);
+    pdf.setTextColor(...BRAND.muted);
+    pdf.text(t.label, x + 12, y + 24);
+
+    // value
+    const innerMaxW = tileW - 24; // padding left+right
+    drawValue(t.value, x + 12, y + 46, innerMaxW);
+  });
+
+  return y + tileH + 14;
+};
+
+/* ---------- Pillar bars (make sure it exists) ---------- */
+const drawPillarBars = (y) => {
+  const boxH = 110;
+  const x = PAGE.l;
+  const w = PAGE.w - PAGE.l - PAGE.r;
+
+  pdf.setFillColor(255, 255, 255);
+  pdf.setDrawColor(...BRAND.line);
+  pdf.roundedRect(x, y, w, boxH, 12, 12, "FD");
+
+  pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(11);
+  pdf.setTextColor(...BRAND.ink);
+  pdf.text("Pillar breakdown", x + 14, y + 24);
+
+  const bars = [
+    { label: "Environmental", v: pillars?.E ?? 0 },
+    { label: "Social", v: pillars?.S ?? 0 },
+    { label: "Governance", v: pillars?.G ?? 0 },
+  ];
+
+  const barX = x + 14;
+  const barW = w - 28;
+  let yy = y + 42;
+
+  bars.forEach((b) => {
+    const v = Math.max(0, Math.min(100, Number(b.v || 0)));
+    const c = ragColor(v);
+
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(9);
+    pdf.setTextColor(...BRAND.muted);
+    pdf.text(b.label, barX, yy);
+
+    // track
+    pdf.setFillColor(...BRAND.line);
+    pdf.roundedRect(barX, yy + 8, barW, 8, 999, 999, "F");
+
+    // fill
+    pdf.setFillColor(...c);
+    pdf.roundedRect(barX, yy + 8, (barW * v) / 100, 8, 999, 999, "F");
+
+    // percent aligned right
+    pdf.setFont("helvetica", "bold");
     pdf.setTextColor(...BRAND.ink);
-    const lines = pdf.splitTextToSize(t, PAGE.w - PAGE.l - PAGE.r);
-    pdf.text(lines, PAGE.l, yy);
-    return yy + lines.length * 12 + 10;
-  };
+    const pct = `${v}%`;
+    pdf.text(pct, barX + barW - pdf.getTextWidth(pct), yy);
+
+    yy += 26;
+  });
+
+  return y + boxH + 14;
+};
+
 
   /* =========================================================
      COVER
