@@ -1,5 +1,5 @@
 // src/pages/DetailsPage.js
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   BarChart,
@@ -11,15 +11,15 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import html2canvas from "html2canvas";
-import { useUserSettings } from "../hooks/useUserSettings";
 import jsPDF from "jspdf";
 
+import { useUserSettings } from "../hooks/useUserSettings";
 import { auth, db } from "../firebase";
 import { doc, getDoc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { getQuestionsForSector } from "../utils/questions";
 import InfoTooltip from "../components/InfoTooltip";
 
-// --- Benchmarks aligned to actual sector labels used in the app ---
+/* ---------------- Benchmarks aligned to sector labels ---------------- */
 const benchmarkData = {
   Manufacturing: { Environmental: 62, Social: 55, Governance: 60 },
   Finance: { Environmental: 48, Social: 61, Governance: 72 },
@@ -29,6 +29,18 @@ const benchmarkData = {
   Transportation: { Environmental: 64, Social: 58, Governance: 51 },
   "Textile/Fashion": { Environmental: 59, Social: 60, Governance: 49 },
   Furniture: { Environmental: 61, Social: 59, Governance: 47 },
+};
+
+/* ---------------- Sector weights (moved OUTSIDE component) ---------------- */
+const SECTOR_WEIGHTS = {
+  Manufacturing: { Environmental: 0.5, Social: 0.3, Governance: 0.2 },
+  Finance: { Environmental: 0.2, Social: 0.3, Governance: 0.5 },
+  "Agriculture/Food": { Environmental: 0.4, Social: 0.4, Governance: 0.2 },
+  Tech: { Environmental: 0.25, Social: 0.35, Governance: 0.4 },
+  Construction: { Environmental: 0.45, Social: 0.35, Governance: 0.2 },
+  Transportation: { Environmental: 0.5, Social: 0.3, Governance: 0.2 },
+  "Textile/Fashion": { Environmental: 0.4, Social: 0.4, Governance: 0.2 },
+  Furniture: { Environmental: 0.4, Social: 0.4, Governance: 0.2 },
 };
 
 const DETAILS_TRANSLATIONS = {
@@ -56,7 +68,6 @@ const DETAILS_TRANSLATIONS = {
     criticalAlertBodySuffix:
       "pillar, we strongly suggest re-evaluating your overall ESG strategy.",
     close: "Close",
-
     whatThisMeansTitle: "What this means",
     whatThisMeansIntro:
       "Short interpretation of your score, benchmark position, and where to start.",
@@ -86,14 +97,13 @@ const DETAILS_TRANSLATIONS = {
     criticalAlertBodySuffix:
       "consigliamo vivamente di rivedere la tua strategia ESG complessiva.",
     close: "Chiudi",
-
     whatThisMeansTitle: "Cosa significa",
     whatThisMeansIntro:
       "Una breve interpretazione del tuo punteggio, della posizione rispetto al benchmark e da dove partire.",
   },
 };
 
-// Same normalization logic you already use in Dashboard
+/* ---------------- Same normalization logic used in Dashboard ---------------- */
 function normalizeAnswer(val) {
   if (val && typeof val === "object" && typeof val.score === "number") {
     let s = val.score;
@@ -119,6 +129,57 @@ function normalizeAnswer(val) {
   return null;
 }
 
+/* ---------------- Build answers[] for this page from a Firestore answers map ---------------- */
+function buildAnswersArrayFromMap(sector, rawAnswersMap) {
+  const qs = getQuestionsForSector(sector || "") || [];
+  const raw = rawAnswersMap || {};
+  return qs.map((q) => {
+    const norm = normalizeAnswer(raw[q.id]);
+    const score = norm ? norm.score : 0;
+
+    const pillar = q.pillar || q.esg || q.category;
+    let category = "Environmental";
+    if (pillar === "S" || pillar === "Social") category = "Social";
+    else if (pillar === "G" || pillar === "Governance") category = "Governance";
+
+    return {
+      question: { category },
+      score,
+      answerLabel: norm ? norm.label : "Not answered",
+    };
+  });
+}
+
+/* ---------------- Accept multiple possible shapes coming from route state ---------------- */
+function coerceAnswersForDetails(sector, stateAnswers) {
+  if (!stateAnswers) return [];
+
+  // If it's already in the DetailsPage expected shape:
+  if (Array.isArray(stateAnswers)) {
+    const looksLikeDetails =
+      stateAnswers.length === 0 ||
+      stateAnswers.every(
+        (a) =>
+          a &&
+          typeof a === "object" &&
+          (typeof a.score === "number" ||
+            typeof a.answerScore === "number" ||
+            typeof a.numericScore === "number") &&
+          a.question &&
+          typeof a.question === "object"
+      );
+    if (looksLikeDetails) return stateAnswers;
+    return [];
+  }
+
+  // If it's a Firestore-style answers map { "QID": {label, score} }:
+  if (typeof stateAnswers === "object") {
+    return buildAnswersArrayFromMap(sector, stateAnswers);
+  }
+
+  return [];
+}
+
 export default function DetailsPage() {
   const { assessmentId } = useParams();
   const location = useLocation();
@@ -127,10 +188,18 @@ export default function DetailsPage() {
   const { language, benchmarkRegion } = useUserSettings();
   const t = DETAILS_TRANSLATIONS[language] || DETAILS_TRANSLATIONS.en;
 
+  const initialRef = useRef({
+    sector: location.state?.sector || "",
+    answers: location.state?.answers ?? null,
+  });
+
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
-  const [sector, setSector] = useState(location.state?.sector || "");
-  const [answers, setAnswers] = useState(location.state?.answers || []);
+
+  const [sector, setSector] = useState(initialRef.current.sector || "");
+  const [answers, setAnswers] = useState(() =>
+    coerceAnswersForDetails(initialRef.current.sector, initialRef.current.answers)
+  );
 
   const [showModal, setShowModal] = useState(false);
   const [criticalPillar, setCriticalPillar] = useState(null);
@@ -138,35 +207,26 @@ export default function DetailsPage() {
   // canonical stored scores (0..100): { overallScore, envScore, socScore, govScore }
   const [storedScores, setStoredScores] = useState(null);
 
-  // Sector weights aligned to actual sectors
-  const sectorWeights = {
-    Manufacturing: { Environmental: 0.5, Social: 0.3, Governance: 0.2 },
-    Finance: { Environmental: 0.2, Social: 0.3, Governance: 0.5 },
-    "Agriculture/Food": { Environmental: 0.4, Social: 0.4, Governance: 0.2 },
-    Tech: { Environmental: 0.25, Social: 0.35, Governance: 0.4 },
-    Construction: { Environmental: 0.45, Social: 0.35, Governance: 0.2 },
-    Transportation: { Environmental: 0.5, Social: 0.3, Governance: 0.2 },
-    "Textile/Fashion": { Environmental: 0.4, Social: 0.4, Governance: 0.2 },
-    Furniture: { Environmental: 0.4, Social: 0.4, Governance: 0.2 },
-  };
-
-  const benchmarkSubtitle =
-    benchmarkRegion === "it"
+  const benchmarkSubtitle = useMemo(() => {
+    return benchmarkRegion === "it"
       ? t.benchmarkSubtitleIT
       : benchmarkRegion === "global"
       ? t.benchmarkSubtitleGlobal
       : t.benchmarkSubtitleEU;
+  }, [benchmarkRegion, t.benchmarkSubtitleEU, t.benchmarkSubtitleGlobal, t.benchmarkSubtitleIT]);
 
-  const categoryLabelMap = {
-    Environmental: t.envLabel,
-    Social: t.socLabel,
-    Governance: t.govLabel,
-  };
+  const categoryLabelMap = useMemo(
+    () => ({
+      Environmental: t.envLabel,
+      Social: t.socLabel,
+      Governance: t.govLabel,
+    }),
+    [t.envLabel, t.socLabel, t.govLabel]
+  );
 
-  // ✅ stable weights object (fixes deps warning)
   const categoryWeights = useMemo(() => {
     return (
-      sectorWeights[sector] || {
+      SECTOR_WEIGHTS[sector] || {
         Environmental: 0.33,
         Social: 0.33,
         Governance: 0.34,
@@ -174,7 +234,7 @@ export default function DetailsPage() {
     );
   }, [sector]);
 
-  // -------- Load assessment from Firestore (if not already passed in state) --------
+  /* ---------------- Load assessment from Firestore (only if needed) ---------------- */
   useEffect(() => {
     (async () => {
       const u = auth.currentUser;
@@ -183,9 +243,14 @@ export default function DetailsPage() {
         return;
       }
 
-      // If we already got sector + answers from location.state (fresh from questionnaire),
-      // we can skip Firestore to avoid flashing.
-      if (sector && answers && answers.length > 0 && !assessmentId) {
+      // If we already have usable sector+answers from route state and no assessmentId, skip Firestore.
+      const initSector = initialRef.current.sector;
+      const initAnswers = initialRef.current.answers;
+
+      const coercedInitAnswers = coerceAnswersForDetails(initSector, initAnswers);
+      if (initSector && coercedInitAnswers.length > 0 && !assessmentId) {
+        setSector(initSector);
+        setAnswers(coercedInitAnswers);
         setLoading(false);
         return;
       }
@@ -197,60 +262,38 @@ export default function DetailsPage() {
       }
 
       try {
-        const snap = await getDoc(
-          doc(db, "users", u.uid, "assessments", assessmentId)
-        );
+        const snap = await getDoc(doc(db, "users", u.uid, "assessments", assessmentId));
         if (!snap.exists()) {
           setLoadError("Assessment not found.");
           setLoading(false);
           return;
         }
 
-        const data = snap.data();
+        const data = snap.data() || {};
 
-        // ✅ Prefer canonical stored scores if present (0..100)
+        // Prefer canonical stored scores if present (0..100)
         const hasStored =
           typeof data.overallScore === "number" &&
           typeof data.envScore === "number" &&
           typeof data.socScore === "number" &&
           typeof data.govScore === "number";
 
-        if (hasStored) {
-          setStoredScores({
-            overallScore: data.overallScore,
-            envScore: data.envScore,
-            socScore: data.socScore,
-            govScore: data.govScore,
-          });
-        } else {
-          setStoredScores(null);
-        }
+        setStoredScores(
+          hasStored
+            ? {
+                overallScore: data.overallScore,
+                envScore: data.envScore,
+                socScore: data.socScore,
+                govScore: data.govScore,
+              }
+            : null
+        );
 
-        const sectorFromDoc = data.sector || sector || "";
-        const rawAnswers = data.answers || {};
-
-        // Build "answers" array in the shape this component expects:
-        const questionsForSector = getQuestionsForSector(sectorFromDoc || "");
-        const builtAnswers = questionsForSector.map((q) => {
-          const raw = rawAnswers[q.id];
-          const norm = normalizeAnswer(raw);
-          const score = norm ? norm.score : 0;
-
-          const pillar = q.pillar || q.esg || q.category;
-          let category = "Environmental";
-          if (pillar === "S" || pillar === "Social") category = "Social";
-          else if (pillar === "G" || pillar === "Governance")
-            category = "Governance";
-
-          return {
-            question: { category },
-            score,
-            answerLabel: norm ? norm.label : "Not answered",
-          };
-        });
+        const sectorFromDoc = data.sector || "";
+        const rawAnswersMap = data.answers || {};
 
         setSector(sectorFromDoc);
-        setAnswers(builtAnswers);
+        setAnswers(buildAnswersArrayFromMap(sectorFromDoc, rawAnswersMap));
         setLoading(false);
       } catch (e) {
         console.error("Error loading assessment for details", e);
@@ -258,16 +301,9 @@ export default function DetailsPage() {
         setLoading(false);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [assessmentId]);
+  }, [assessmentId, navigate]);
 
-  /*
-   * ---------- SCORES ----------
-   * computedScoresObj: derived from answers[] (fallback only)
-   * scoresObj: final pillar % used by UI (canonical first)
-   * overall: final overall % used by UI (canonical first)
-   */
-
+  /* ---------------- Scores ---------------- */
   const computedScoresObj = useMemo(() => {
     const categoryScoresRaw = { Environmental: [], Social: [], Governance: [] };
 
@@ -328,7 +364,7 @@ export default function DetailsPage() {
     return Math.round(val * 10) / 10;
   }, [storedScores, scoresObj, categoryWeights]);
 
-  // ---------- CRITICAL PILLAR LOGIC (0..100, threshold 20) ----------
+  /* ---------------- Critical pillar logic ---------------- */
   const criticalEntry = useMemo(() => {
     return Object.entries(scoresObj || {}).find(([_, v]) => {
       return typeof v === "number" && !Number.isNaN(v) && v <= 20;
@@ -353,23 +389,26 @@ export default function DetailsPage() {
     return "❌ Critical";
   };
 
-  const suggestionsByCategory = {
-    Environmental: [
-      "Switch to renewable energy sources.",
-      "Track and reduce carbon emissions.",
-      "Improve waste and water management.",
-    ],
-    Social: [
-      "Promote workplace diversity.",
-      "Improve employee health and safety.",
-      "Support community initiatives.",
-    ],
-    Governance: [
-      "Appoint an ESG officer.",
-      "Improve supply chain transparency.",
-      "Enforce an anti-bribery policy.",
-    ],
-  };
+  const suggestionsByCategory = useMemo(
+    () => ({
+      Environmental: [
+        "Switch to renewable energy sources.",
+        "Track and reduce carbon emissions.",
+        "Improve waste and water management.",
+      ],
+      Social: [
+        "Promote workplace diversity.",
+        "Improve employee health and safety.",
+        "Support community initiatives.",
+      ],
+      Governance: [
+        "Appoint an ESG officer.",
+        "Improve supply chain transparency.",
+        "Enforce an anti-bribery policy.",
+      ],
+    }),
+    []
+  );
 
   const lowScoreCategories = useMemo(() => {
     return Object.entries(scoresObj)
@@ -377,7 +416,6 @@ export default function DetailsPage() {
       .map(([category]) => category);
   }, [scoresObj]);
 
-  // scores passed to other pages (0..100)
   const normalizedScores = useMemo(
     () => ({
       E: scoresObj.Environmental ?? 0,
@@ -388,7 +426,7 @@ export default function DetailsPage() {
     [scoresObj, overall]
   );
 
-  // ---------- WRITE SUMMARY BACK TO FIRESTORE ----------
+  /* ---------------- Write summary back to Firestore ---------------- */
   useEffect(() => {
     const saveSummary = async () => {
       if (loading) return;
@@ -408,23 +446,16 @@ export default function DetailsPage() {
           const sectorAvgE = sectorBench.Environmental ?? null;
           const sectorAvgS = sectorBench.Social ?? null;
           const sectorAvgG = sectorBench.Governance ?? null;
+
           const wE = categoryWeights.Environmental || 0;
           const wS = categoryWeights.Social || 0;
           const wG = categoryWeights.Governance || 0;
           const sumW = wE + wS + wG || 1;
 
           const sectorAvgOverall =
-            Math.round(
-              ((sectorAvgE * wE + sectorAvgS * wS + sectorAvgG * wG) / sumW) *
-                10
-            ) / 10;
+            Math.round(((sectorAvgE * wE + sectorAvgS * wS + sectorAvgG * wG) / sumW) * 10) / 10;
 
-          benchmarkPayload = {
-            sectorAvgE,
-            sectorAvgS,
-            sectorAvgG,
-            sectorAvgOverall,
-          };
+          benchmarkPayload = { sectorAvgE, sectorAvgS, sectorAvgG, sectorAvgOverall };
         }
 
         await updateDoc(doc(db, "users", u.uid, "assessments", assessmentId), {
@@ -433,7 +464,7 @@ export default function DetailsPage() {
           country: profile.country || null,
           csrdInScope: profile.csrd === "Yes",
 
-          // ✅ canonical fields (0..100)
+          // canonical fields (0..100)
           overallScore: overall,
           envScore: scoresObj.Environmental ?? 0,
           socScore: scoresObj.Social ?? 0,
@@ -443,12 +474,10 @@ export default function DetailsPage() {
           completedAt: serverTimestamp(),
 
           turnover: profile.turnover || null,
-goal: profile.goal || null,
-timeline: profile.timeline || null,
-benchmarkRegion: benchmarkRegion || "eu",
-language: language || "en",
-
-
+          goal: profile.goal || null,
+          timeline: profile.timeline || null,
+          benchmarkRegion: benchmarkRegion || "eu",
+          language: language || "en",
         });
       } catch (err) {
         console.error("Failed to update assessment summary:", err);
@@ -456,9 +485,18 @@ language: language || "en",
     };
 
     saveSummary();
-  }, [loading, assessmentId, sector, overall, scoresObj, categoryWeights]);
+  }, [
+    loading,
+    assessmentId,
+    sector,
+    overall,
+    scoresObj,
+    categoryWeights,
+    benchmarkRegion,
+    language,
+  ]);
 
-  // ---------- NARRATIVE DATA FOR "WHAT THIS MEANS" ----------
+  /* ---------------- Narrative: "What this means" ---------------- */
   const sectorBenchmark = benchmarkData[sector] || null;
 
   const sectorBenchmarkOverall = useMemo(() => {
@@ -473,9 +511,7 @@ language: language || "en",
     const wG = categoryWeights.Governance || 0;
     const sumW = wE + wS + wG || 1;
 
-    return (
-      Math.round(((bE * wE + bS * wS + bG * wG) / sumW) * 10) / 10
-    );
+    return Math.round(((bE * wE + bS * wS + bG * wG) / sumW) * 10) / 10;
   }, [sectorBenchmark, categoryWeights]);
 
   const weakest = useMemo(() => {
@@ -565,24 +601,27 @@ language: language || "en",
     return bullets;
   }, [sectorBenchmarkOverall, overall, sector, language, weakest, categoryLabelMap]);
 
-  // ---------- Actions ----------
+  /* ---------------- Actions ---------------- */
   const handleStartOver = () => navigate("/dashboard");
 
   const handleDownloadPDF = async () => {
     const input = document.getElementById("details-container");
     if (!input) return;
+
     const scrollY = window.scrollY;
     const canvas = await html2canvas(input, {
       scale: 2,
       scrollY: -scrollY,
       useCORS: true,
     });
+
     const imgData = canvas.toDataURL("image/png");
     const pdf = new jsPDF({
       orientation: "portrait",
       unit: "px",
       format: [canvas.width, canvas.height],
     });
+
     pdf.addImage(imgData, "PNG", 0, 0, canvas.width, canvas.height);
     pdf.save(`EcoTrack-${sector || "assessment"}-Results.pdf`);
   };
@@ -611,7 +650,7 @@ language: language || "en",
 
   const goDashboard = () => navigate("/dashboard");
 
-  // ---------- Loading / Error UI ----------
+  /* ---------------- Loading / Error UI ---------------- */
   if (loading) {
     return (
       <div className="App fade-in">
@@ -635,7 +674,7 @@ language: language || "en",
     );
   }
 
-  // ---------- UI ----------
+  /* ---------------- UI ---------------- */
   return (
     <div className="App fade-in">
       <header className="App-header">
@@ -709,7 +748,8 @@ language: language || "en",
                 🧮 Applied Weights: {t.envLabel}:{" "}
                 {(categoryWeights.Environmental * 100).toFixed(0)}% |{" "}
                 {t.socLabel}: {(categoryWeights.Social * 100).toFixed(0)}% |{" "}
-                {t.govLabel}: {(categoryWeights.Governance * 100).toFixed(0)}%
+                {t.govLabel}:{" "}
+                {(categoryWeights.Governance * 100).toFixed(0)}%
               </p>
 
               <section
@@ -932,6 +972,7 @@ language: language || "en",
     </div>
   );
 }
+
 
 
 
