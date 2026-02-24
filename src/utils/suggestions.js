@@ -1,20 +1,22 @@
 // src/utils/suggestions.js
 // Single source of truth for ALL suggestions.
 //
-// ✅ New schema fields used for tailoring:
+// ✅ Tailoring schema fields:
 // - sectors: ["Furniture"] or ["*"]
 // - sizes: ["micro","small","medium","large"] (optional)
-// - csrdOnly: true/false (optional; when true, only show if CSRD in scope)
+// - turnoverTiers: ["micro","small","medium","large"] (optional)
+// - csrdOnly: true/false (optional; when true, only show if CSRD is clearly in scope)
 // - goals: ["compliance","cost","decarbonization","customer","risk","finance"] (optional)
 // - priorityTags: extra tags used for scoring boosts (optional)
 //
-// NOTE: Keep your current fields too (pillar/title/text/tags/impact/effort/timeframe)
+// NOTE: Keep your current UI fields too:
+// pillar/title/text/tags/impact/effort/timeframe
 // so UI + action plan keep working unchanged.
 
 export const SUGGESTIONS = [
-  // ---------------------------
+  // -------------------------------------------------
   // GLOBAL FOUNDATIONS (ALL)
-  // ---------------------------
+  // -------------------------------------------------
   {
     id: "g-esg-owner-cadence",
     pillar: "G",
@@ -27,6 +29,8 @@ export const SUGGESTIONS = [
     timeframe: "0–6 months",
     goals: ["compliance", "risk", "finance", "customer"],
     sizes: ["micro", "small", "medium", "large"],
+    turnoverTiers: ["micro", "small", "medium", "large"],
+    priorityTags: ["owner", "cadence", "accountability"],
   },
   {
     id: "g-data-register",
@@ -39,6 +43,8 @@ export const SUGGESTIONS = [
     effort: "Medium",
     timeframe: "6–12 months",
     goals: ["compliance", "finance", "risk"],
+    turnoverTiers: ["small", "medium", "large"],
+    priorityTags: ["kpi", "evidence", "audit-ready"],
   },
   {
     id: "g-code-of-conduct",
@@ -51,6 +57,47 @@ export const SUGGESTIONS = [
     effort: "Low",
     timeframe: "0–6 months",
     goals: ["compliance", "risk", "customer"],
+    sizes: ["micro", "small", "medium", "large"],
+    priorityTags: ["ethics", "conduct"],
+  },
+  {
+    id: "g-risk-register",
+    pillar: "G",
+    title: "Maintain an ESG risk register with owners",
+    text: "List top ESG risks, likelihood/impact, controls, and assign owners with review dates. Keep it short: 10–15 risks max.",
+    tags: ["risk", "governance", "controls"],
+    sectors: ["*"],
+    impact: "High",
+    effort: "Low",
+    timeframe: "0–6 months",
+    goals: ["risk", "compliance", "finance"],
+    priorityTags: ["risk-register", "controls"],
+  },
+  {
+    id: "g-supplier-screening-lite",
+    pillar: "G",
+    title: "Add a lightweight supplier ESG screening",
+    text: "Ask top 10 suppliers for 5 data points (certifications, labor policy, emissions estimate, incidents, traceability) and track updates yearly.",
+    tags: ["procurement", "supply-chain", "risk", "compliance"],
+    sectors: ["*"],
+    impact: "High",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    goals: ["risk", "customer", "compliance"],
+    priorityTags: ["supplier", "screening"],
+  },
+  {
+    id: "g-whistleblowing-channel",
+    pillar: "G",
+    title: "Create a simple whistleblowing / grievance channel",
+    text: "Set up a confidential email form or third-party channel, define response roles, and publish a non-retaliation policy.",
+    tags: ["ethics", "governance", "grievance", "compliance"],
+    sectors: ["*"],
+    impact: "Medium",
+    effort: "Low",
+    timeframe: "0–6 months",
+    goals: ["risk", "compliance"],
+    priorityTags: ["whistleblowing", "non-retaliation"],
   },
   {
     id: "s-training-plan",
@@ -63,6 +110,20 @@ export const SUGGESTIONS = [
     effort: "Low",
     timeframe: "0–6 months",
     goals: ["risk", "customer"],
+    priorityTags: ["training", "capability"],
+  },
+  {
+    id: "s-hs-basics",
+    pillar: "S",
+    title: "Standardize basic H&S procedures (one-page rules)",
+    text: "Document the top 10 safety rules, PPE requirements, incident reporting flow, and run a 15-minute refresher monthly.",
+    tags: ["health-safety", "people", "risk"],
+    sectors: ["*"],
+    impact: "High",
+    effort: "Low",
+    timeframe: "0–6 months",
+    goals: ["risk", "customer"],
+    priorityTags: ["incident", "ppe"],
   },
   {
     id: "e-energy-audit",
@@ -75,6 +136,7 @@ export const SUGGESTIONS = [
     effort: "Low",
     timeframe: "0–6 months",
     goals: ["cost", "decarbonization", "risk"],
+    priorityTags: ["energy", "quick-win"],
   },
   {
     id: "e-led-occupancy",
@@ -88,11 +150,52 @@ export const SUGGESTIONS = [
     timeframe: "0–6 months",
     goals: ["cost", "decarbonization"],
     sizes: ["micro", "small", "medium", "large"],
+    turnoverTiers: ["micro", "small", "medium", "large"],
+    priorityTags: ["efficiency", "capex-light"],
+  },
+  {
+    id: "e-waste-baseline",
+    pillar: "E",
+    title: "Create a waste baseline and 2 reduction targets",
+    text: "Track waste volumes by stream (recyclable/residual/hazardous) monthly and set two targets: reduce residual and increase recycling rate.",
+    tags: ["waste", "metrics", "circularity"],
+    sectors: ["*"],
+    impact: "High",
+    effort: "Low",
+    timeframe: "0–6 months",
+    goals: ["cost", "risk", "customer"],
+    priorityTags: ["baseline", "targets"],
+  },
+  {
+    id: "e-ghg-scope12-lite",
+    pillar: "E",
+    title: "Estimate Scope 1 & 2 emissions (lightweight)",
+    text: "Collect fuel and electricity bills, compute emissions using standard factors, and track quarterly. Don’t overcomplicate: start with 10 lines of data.",
+    tags: ["carbon", "emissions", "metrics", "scope1", "scope2"],
+    sectors: ["*"],
+    impact: "High",
+    effort: "Medium",
+    timeframe: "0–6 months",
+    goals: ["decarbonization", "customer", "finance"],
+    priorityTags: ["ghg", "baseline"],
+  },
+  {
+    id: "e-water-baseline",
+    pillar: "E",
+    title: "Create a water baseline + leak check",
+    text: "Track water consumption monthly, check for leaks, and set a simple reduction target. Add sub-meters if you have hotspots.",
+    tags: ["water", "metrics", "risk"],
+    sectors: ["*"],
+    impact: "Medium",
+    effort: "Low",
+    timeframe: "0–6 months",
+    goals: ["risk", "cost", "compliance"],
+    priorityTags: ["water", "leaks"],
   },
 
-  // ---------------------------
+  // -------------------------------------------------
   // CSRD / COMPLIANCE (ONLY IF CSRD IN SCOPE)
-  // ---------------------------
+  // -------------------------------------------------
   {
     id: "csrd-double-materiality",
     pillar: "G",
@@ -106,6 +209,8 @@ export const SUGGESTIONS = [
     csrdOnly: true,
     goals: ["compliance", "finance", "risk"],
     sizes: ["medium", "large"],
+    turnoverTiers: ["medium", "large"],
+    priorityTags: ["dma", "stakeholders"],
   },
   {
     id: "csrd-esrs-gap",
@@ -120,6 +225,8 @@ export const SUGGESTIONS = [
     csrdOnly: true,
     goals: ["compliance"],
     sizes: ["medium", "large"],
+    turnoverTiers: ["medium", "large"],
+    priorityTags: ["gap", "evidence"],
   },
   {
     id: "csrd-assurance-readiness",
@@ -134,11 +241,43 @@ export const SUGGESTIONS = [
     csrdOnly: true,
     goals: ["compliance", "risk"],
     sizes: ["large", "medium"],
+    turnoverTiers: ["large", "medium"],
+    priorityTags: ["assurance", "controls"],
+  },
+  {
+    id: "csrd-value-chain-map",
+    pillar: "G",
+    title: "Map your value chain for ESRS (who, where, what)",
+    text: "List key upstream/downstream partners, locations, and key impact areas. This unlocks realistic Scope 3 + human rights prioritization.",
+    tags: ["csrd", "value-chain", "scope3", "due-diligence"],
+    sectors: ["*"],
+    impact: "High",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    csrdOnly: true,
+    goals: ["compliance", "risk", "finance"],
+    sizes: ["medium", "large"],
+    priorityTags: ["value-chain", "scope3"],
+  },
+  {
+    id: "csrd-policies-minimum-set",
+    pillar: "G",
+    title: "Create the minimum policy set for ESRS disclosures",
+    text: "Publish short policies (code of conduct, H&S, environmental commitments, supplier expectations) and link each to owners and evidence.",
+    tags: ["csrd", "policy", "governance", "compliance"],
+    sectors: ["*"],
+    impact: "Medium",
+    effort: "Medium",
+    timeframe: "0–6 months",
+    csrdOnly: true,
+    goals: ["compliance", "risk"],
+    sizes: ["medium", "large"],
+    priorityTags: ["policies", "owners"],
   },
 
-  // ---------------------------
+  // -------------------------------------------------
   // MANUFACTURING
-  // ---------------------------
+  // -------------------------------------------------
   {
     id: "mfg-submetering",
     pillar: "E",
@@ -151,6 +290,8 @@ export const SUGGESTIONS = [
     timeframe: "6–12 months",
     goals: ["cost", "decarbonization"],
     sizes: ["small", "medium", "large"],
+    turnoverTiers: ["small", "medium", "large"],
+    priorityTags: ["intensity", "dashboard"],
   },
   {
     id: "mfg-waste-streams",
@@ -188,10 +329,78 @@ export const SUGGESTIONS = [
     timeframe: "0–6 months",
     goals: ["risk", "customer"],
   },
+  // NEW manufacturing additions
+  {
+    id: "mfg-compressed-air-leaks",
+    pillar: "E",
+    title: "Compressed air leak program (quick savings)",
+    text: "Inspect lines, fix leaks, set pressure setpoints, and track kWh savings monthly. Compressed air waste is often invisible but expensive.",
+    tags: ["energy", "maintenance", "efficiency"],
+    sectors: ["Manufacturing"],
+    impact: "High",
+    effort: "Low",
+    timeframe: "0–6 months",
+    goals: ["cost", "decarbonization"],
+    priorityTags: ["quick-win", "compressed-air"],
+  },
+  {
+    id: "mfg-process-heat-optimization",
+    pillar: "E",
+    title: "Optimize process heat (steam/ovens) with simple controls",
+    text: "Insulate hot surfaces, fix steam traps, optimize start/stop schedules, and monitor temperature setpoints to reduce fuel use.",
+    tags: ["energy", "process-heat", "decarbonization"],
+    sectors: ["Manufacturing"],
+    impact: "High",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    goals: ["cost", "decarbonization"],
+    sizes: ["small", "medium", "large"],
+    priorityTags: ["steam", "thermal"],
+  },
+  {
+    id: "mfg-maintenance-preventive",
+    pillar: "G",
+    title: "Preventive maintenance plan linked to ESG KPIs",
+    text: "Define maintenance routines for high-impact assets (boilers, compressors, filters) and connect downtime/consumption to KPIs.",
+    tags: ["governance", "maintenance", "metrics"],
+    sectors: ["Manufacturing"],
+    impact: "Medium",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    goals: ["risk", "cost"],
+    priorityTags: ["reliability", "kpi"],
+  },
+  {
+    id: "mfg-iso50001-readiness",
+    pillar: "G",
+    title: "ISO 50001 readiness checklist (energy management)",
+    text: "Create an energy management structure: energy review, objectives, action plan, and internal checks. Even without certification, it improves discipline.",
+    tags: ["energy", "governance", "iso", "management-system"],
+    sectors: ["Manufacturing"],
+    impact: "High",
+    effort: "High",
+    timeframe: "12+ months",
+    goals: ["cost", "decarbonization", "customer"],
+    sizes: ["medium", "large"],
+    priorityTags: ["iso50001", "ems"],
+  },
+  {
+    id: "mfg-worker-ergonomics",
+    pillar: "S",
+    title: "Ergonomics and repetitive strain prevention",
+    text: "Identify top 5 manual tasks causing strain, adjust workstation height/tools, and track incidents and absences quarterly.",
+    tags: ["people", "health-safety", "wellbeing"],
+    sectors: ["Manufacturing"],
+    impact: "Medium",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    goals: ["risk", "customer"],
+    priorityTags: ["ergonomics", "injury-prevention"],
+  },
 
-  // ---------------------------
+  // -------------------------------------------------
   // AGRICULTURE / FOOD
-  // ---------------------------
+  // -------------------------------------------------
   {
     id: "agri-water-map",
     pillar: "E",
@@ -228,10 +437,76 @@ export const SUGGESTIONS = [
     timeframe: "6–12 months",
     goals: ["risk", "customer", "compliance"],
   },
+  // NEW agri/food additions
+  {
+    id: "agri-irrigation-efficiency",
+    pillar: "E",
+    title: "Improve irrigation efficiency (schedule + sensors)",
+    text: "Use a simple irrigation schedule, check leaks, and consider low-cost soil moisture monitoring to reduce water and energy use.",
+    tags: ["water", "efficiency", "risk"],
+    sectors: ["Agriculture/Food"],
+    impact: "High",
+    effort: "Medium",
+    timeframe: "0–6 months",
+    goals: ["cost", "risk"],
+    priorityTags: ["irrigation", "water-scarcity"],
+  },
+  {
+    id: "agri-fertilizer-optimization",
+    pillar: "E",
+    title: "Fertilizer optimization to cut N2O and runoff",
+    text: "Review application rates, timing, and precision; train operators and track inputs per hectare/product to reduce emissions and water pollution.",
+    tags: ["emissions", "water", "land", "agrochemicals"],
+    sectors: ["Agriculture/Food"],
+    impact: "High",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    goals: ["risk", "decarbonization", "cost"],
+    priorityTags: ["n2o", "runoff"],
+  },
+  {
+    id: "agri-cold-chain-efficiency",
+    pillar: "E",
+    title: "Cold chain efficiency + refrigerant checks",
+    text: "Track cold room energy use, check door seals, optimize setpoints, and prevent refrigerant leaks to reduce cost and climate impact.",
+    tags: ["energy", "refrigerants", "cost"],
+    sectors: ["Agriculture/Food"],
+    impact: "High",
+    effort: "Low",
+    timeframe: "0–6 months",
+    goals: ["cost", "decarbonization", "risk"],
+    priorityTags: ["refrigerant", "cold-chain"],
+  },
+  {
+    id: "agri-traceability-lot",
+    pillar: "G",
+    title: "Strengthen traceability (lot/batch) for key products",
+    text: "Document minimum traceability fields (lot, origin, supplier, date) and test a mock recall annually to reduce incident risk.",
+    tags: ["governance", "risk", "traceability", "compliance"],
+    sectors: ["Agriculture/Food"],
+    impact: "High",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    goals: ["risk", "compliance", "customer"],
+    priorityTags: ["traceability", "recall"],
+  },
+  {
+    id: "agri-worker-housing-standards",
+    pillar: "S",
+    title: "Seasonal worker welfare checks (housing & safety)",
+    text: "Create a simple checklist for housing, sanitation, working hours, and safety training; document corrective actions.",
+    tags: ["labor", "people", "human-rights"],
+    sectors: ["Agriculture/Food"],
+    impact: "High",
+    effort: "Low",
+    timeframe: "0–6 months",
+    goals: ["risk", "customer"],
+    priorityTags: ["seasonal-workers", "welfare"],
+  },
 
-  // ---------------------------
+  // -------------------------------------------------
   // TEXTILE / FASHION
-  // ---------------------------
+  // -------------------------------------------------
   {
     id: "textile-chem-mrsl",
     pillar: "E",
@@ -268,10 +543,77 @@ export const SUGGESTIONS = [
     timeframe: "6–12 months",
     goals: ["risk", "customer", "compliance"],
   },
+  // NEW textile additions
+  {
+    id: "textile-wastewater-monitoring",
+    pillar: "E",
+    title: "Wastewater monitoring plan (pH/COD/basic checks)",
+    text: "Define monthly checks for key wastewater parameters, verify treatment performance, and record incidents and corrective actions.",
+    tags: ["water", "wastewater", "compliance", "risk"],
+    sectors: ["Textile/Fashion"],
+    impact: "High",
+    effort: "Medium",
+    timeframe: "0–6 months",
+    goals: ["compliance", "risk", "customer"],
+    priorityTags: ["effluent", "treatment"],
+  },
+  {
+    id: "textile-heat-recovery",
+    pillar: "E",
+    title: "Heat recovery on hot water/steam processes",
+    text: "Assess heat recovery opportunities in dyeing/finishing; prioritize 1 pilot area and track fuel savings.",
+    tags: ["energy", "process-heat", "decarbonization"],
+    sectors: ["Textile/Fashion"],
+    impact: "High",
+    effort: "High",
+    timeframe: "12+ months",
+    goals: ["cost", "decarbonization"],
+    sizes: ["medium", "large"],
+    priorityTags: ["heat-recovery", "steam"],
+  },
+  {
+    id: "textile-materials-recycled",
+    pillar: "E",
+    title: "Increase recycled/low-impact materials share",
+    text: "Start with one product line: define minimum recycled content or preferred fibers, document suppliers and certifications.",
+    tags: ["materials", "circularity", "customer"],
+    sectors: ["Textile/Fashion"],
+    impact: "Medium",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    goals: ["customer", "decarbonization"],
+    priorityTags: ["recycled", "preferred-fibers"],
+  },
+  {
+    id: "textile-modern-slavery-checks",
+    pillar: "G",
+    title: "Human rights due diligence checks for high-risk sourcing",
+    text: "Identify high-risk regions/materials, request supplier declarations, and set escalation steps for non-compliance.",
+    tags: ["human-rights", "governance", "risk", "procurement"],
+    sectors: ["Textile/Fashion"],
+    impact: "High",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    goals: ["risk", "customer", "compliance"],
+    priorityTags: ["due-diligence", "tiering"],
+  },
+  {
+    id: "textile-worker-grievance",
+    pillar: "S",
+    title: "Worker grievance mechanism for suppliers (basic)",
+    text: "Add a channel for workers to report issues safely (email/QR hotline), define response SLA, and log outcomes.",
+    tags: ["people", "human-rights", "grievance"],
+    sectors: ["Textile/Fashion"],
+    impact: "High",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    goals: ["risk", "customer"],
+    priorityTags: ["grievance", "non-retaliation"],
+  },
 
-  // ---------------------------
+  // -------------------------------------------------
   // TECH
-  // ---------------------------
+  // -------------------------------------------------
   {
     id: "tech-cloud-emissions",
     pillar: "E",
@@ -297,10 +639,76 @@ export const SUGGESTIONS = [
     timeframe: "6–12 months",
     goals: ["risk", "customer", "compliance"],
   },
+  // NEW tech additions
+  {
+    id: "tech-green-software",
+    pillar: "E",
+    title: "Green software engineering checklist (quick wins)",
+    text: "Reduce compute waste by caching, efficient queries, right-sizing instances, and removing idle services. Track cloud cost and emissions monthly.",
+    tags: ["energy", "efficiency", "carbon", "cost"],
+    sectors: ["Tech"],
+    impact: "High",
+    effort: "Low",
+    timeframe: "0–6 months",
+    goals: ["cost", "decarbonization"],
+    priorityTags: ["green-software", "optimization"],
+  },
+  {
+    id: "tech-e-waste-policy",
+    pillar: "E",
+    title: "IT asset lifecycle + e-waste policy",
+    text: "Track devices, extend lifetimes, wipe data securely, and partner with certified recyclers. Report reused/recycled rates yearly.",
+    tags: ["e-waste", "circularity", "risk"],
+    sectors: ["Tech"],
+    impact: "Medium",
+    effort: "Low",
+    timeframe: "0–6 months",
+    goals: ["risk", "customer", "cost"],
+    priorityTags: ["it-assets", "recycling"],
+  },
+  {
+    id: "tech-accessibility-basics",
+    pillar: "S",
+    title: "Accessibility and inclusive design basics",
+    text: "Run an accessibility audit for key flows, fix top issues, and include accessibility checks in release QA.",
+    tags: ["people", "customer", "inclusion", "risk"],
+    sectors: ["Tech"],
+    impact: "Medium",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    goals: ["customer", "risk"],
+    priorityTags: ["a11y", "inclusive-design"],
+  },
+  {
+    id: "tech-incident-tabletop",
+    pillar: "G",
+    title: "Run a security/privacy incident tabletop exercise",
+    text: "Simulate one incident scenario, clarify roles, response steps, and evidence collection. Document gaps and fix 3 items.",
+    tags: ["risk", "governance", "privacy", "security"],
+    sectors: ["Tech"],
+    impact: "High",
+    effort: "Low",
+    timeframe: "0–6 months",
+    goals: ["risk", "compliance", "customer"],
+    priorityTags: ["incident-response", "tabletop"],
+  },
+  {
+    id: "tech-ai-ethics-guardrails",
+    pillar: "G",
+    title: "AI ethics guardrails for product teams",
+    text: "Define rules for data use, bias checks, human oversight, and monitoring. Keep it practical: 8–10 guardrails with owners.",
+    tags: ["governance", "risk", "ethics", "ai"],
+    sectors: ["Tech"],
+    impact: "Medium",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    goals: ["risk", "customer"],
+    priorityTags: ["ai-ethics", "bias"],
+  },
 
-  // ---------------------------
+  // -------------------------------------------------
   // FINANCE
-  // ---------------------------
+  // -------------------------------------------------
   {
     id: "fin-esg-risk-screen",
     pillar: "G",
@@ -313,6 +721,7 @@ export const SUGGESTIONS = [
     timeframe: "6–12 months",
     goals: ["risk", "compliance", "finance"],
     sizes: ["small", "medium", "large"],
+    turnoverTiers: ["small", "medium", "large"],
   },
   {
     id: "fin-anti-bribery-training",
@@ -326,10 +735,77 @@ export const SUGGESTIONS = [
     timeframe: "0–6 months",
     goals: ["compliance", "risk"],
   },
+  // NEW finance additions
+  {
+    id: "fin-climate-risk-scenarios",
+    pillar: "G",
+    title: "Run a simple climate risk scenario exercise",
+    text: "Pick 2 scenarios, assess exposure of top portfolios/clients, and document mitigation actions and escalation triggers.",
+    tags: ["risk", "climate-risk", "governance", "finance"],
+    sectors: ["Finance"],
+    impact: "High",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    goals: ["risk", "finance"],
+    priorityTags: ["scenario", "exposure"],
+  },
+  {
+    id: "fin-client-engagement-plan",
+    pillar: "S",
+    title: "Client ESG engagement plan (for high-risk clients)",
+    text: "Define what evidence you request, how you support improvements, and when you exit relationships. Track outcomes quarterly.",
+    tags: ["customer", "risk", "engagement"],
+    sectors: ["Finance"],
+    impact: "Medium",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    goals: ["risk", "customer", "finance"],
+    priorityTags: ["engagement", "evidence"],
+  },
+  {
+    id: "fin-portfolio-footprint-lite",
+    pillar: "E",
+    title: "Estimate financed emissions / portfolio footprint (lite)",
+    text: "Start with top exposures, use proxies if needed, and define a plan to improve data quality over time.",
+    tags: ["carbon", "metrics", "finance", "scope3"],
+    sectors: ["Finance"],
+    impact: "High",
+    effort: "High",
+    timeframe: "12+ months",
+    goals: ["finance", "decarbonization", "customer"],
+    sizes: ["medium", "large"],
+    priorityTags: ["financed-emissions", "data-quality"],
+  },
+  {
+    id: "fin-cyber-controls",
+    pillar: "G",
+    title: "Strengthen cyber controls for critical systems",
+    text: "Document 10 key controls (MFA, patching, backups, access reviews) and run quarterly evidence checks.",
+    tags: ["risk", "governance", "security", "compliance"],
+    sectors: ["Finance"],
+    impact: "High",
+    effort: "Medium",
+    timeframe: "0–6 months",
+    goals: ["risk", "compliance", "customer"],
+    priorityTags: ["mfa", "access-control"],
+  },
+  {
+    id: "fin-employee-conduct",
+    pillar: "S",
+    title: "Employee conduct + sales practice refreshers",
+    text: "Train staff on mis-selling risks, customer fairness, and complaints handling; track completion and incidents quarterly.",
+    tags: ["people", "customer", "training", "risk"],
+    sectors: ["Finance"],
+    impact: "High",
+    effort: "Low",
+    timeframe: "0–6 months",
+    goals: ["risk", "customer", "compliance"],
+    priorityTags: ["fairness", "complaints"],
+  },
 
-  // ---------------------------
+  // -------------------------------------------------
   // CONSTRUCTION
-  // ---------------------------
+  // -------------------------------------------------
   {
     id: "con-site-waste",
     pillar: "E",
@@ -354,10 +830,77 @@ export const SUGGESTIONS = [
     timeframe: "0–6 months",
     goals: ["risk", "customer"],
   },
+  // NEW construction additions
+  {
+    id: "con-low-carbon-materials",
+    pillar: "E",
+    title: "Prefer low-carbon materials (EPD-based short list)",
+    text: "Create a shortlist of lower-carbon concrete/steel/insulation options using EPDs where available; use it on new bids.",
+    tags: ["materials", "decarbonization", "epd", "customer"],
+    sectors: ["Construction"],
+    impact: "High",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    goals: ["customer", "decarbonization", "finance"],
+    priorityTags: ["epd", "procurement"],
+  },
+  {
+    id: "con-dust-noise-plan",
+    pillar: "S",
+    title: "Dust/noise control plan + community complaints log",
+    text: "Define controls (watering, barriers, schedules), communicate with neighbors, and log complaints and corrective actions.",
+    tags: ["community", "people", "risk"],
+    sectors: ["Construction"],
+    impact: "Medium",
+    effort: "Low",
+    timeframe: "0–6 months",
+    goals: ["risk", "customer"],
+    priorityTags: ["community", "complaints"],
+  },
+  {
+    id: "con-site-water-runoff",
+    pillar: "E",
+    title: "Manage site water runoff and pollution risk",
+    text: "Identify runoff hotspots, use sediment controls, store chemicals safely, and document inspections weekly.",
+    tags: ["water", "risk", "compliance"],
+    sectors: ["Construction"],
+    impact: "High",
+    effort: "Low",
+    timeframe: "0–6 months",
+    goals: ["risk", "compliance"],
+    priorityTags: ["runoff", "pollution"],
+  },
+  {
+    id: "con-subcontractor-screening",
+    pillar: "G",
+    title: "Subcontractor screening + minimum standards",
+    text: "Require H&S evidence, insurance, training, and basic conduct standards. Track non-compliance and stop-work triggers.",
+    tags: ["governance", "procurement", "risk", "safety"],
+    sectors: ["Construction"],
+    impact: "High",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    goals: ["risk", "customer", "compliance"],
+    priorityTags: ["subcontractors", "stop-work"],
+  },
+  {
+    id: "con-iso45001-readiness",
+    pillar: "G",
+    title: "ISO 45001 readiness checklist (H&S management)",
+    text: "Structure responsibilities, risk assessments, training records, and internal audits. Certification optional; discipline is the win.",
+    tags: ["health-safety", "management-system", "governance"],
+    sectors: ["Construction"],
+    impact: "High",
+    effort: "High",
+    timeframe: "12+ months",
+    goals: ["risk", "customer"],
+    sizes: ["medium", "large"],
+    priorityTags: ["iso45001", "audit"],
+  },
 
-  // ---------------------------
+  // -------------------------------------------------
   // TRANSPORTATION
-  // ---------------------------
+  // -------------------------------------------------
   {
     id: "trans-route-optim",
     pillar: "E",
@@ -370,6 +913,7 @@ export const SUGGESTIONS = [
     timeframe: "6–12 months",
     goals: ["cost", "decarbonization"],
     sizes: ["small", "medium", "large"],
+    turnoverTiers: ["small", "medium", "large"],
   },
   {
     id: "trans-idling-policy",
@@ -383,10 +927,77 @@ export const SUGGESTIONS = [
     timeframe: "0–6 months",
     goals: ["cost", "decarbonization"],
   },
+  // NEW transportation additions
+  {
+    id: "trans-telematics-fuel",
+    pillar: "E",
+    title: "Telematics-based fuel efficiency program",
+    text: "Use telematics to track harsh braking, speeding, and fuel efficiency; run monthly coaching and reward improvements.",
+    tags: ["transport", "fuel", "metrics", "people"],
+    sectors: ["Transportation"],
+    impact: "High",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    goals: ["cost", "decarbonization", "risk"],
+    priorityTags: ["telematics", "eco-driving"],
+  },
+  {
+    id: "trans-tires-maintenance",
+    pillar: "E",
+    title: "Tire pressure + maintenance checklist",
+    text: "Low tire pressure increases fuel use and accident risk. Standardize weekly checks and track maintenance compliance.",
+    tags: ["transport", "maintenance", "risk", "fuel"],
+    sectors: ["Transportation"],
+    impact: "Medium",
+    effort: "Low",
+    timeframe: "0–6 months",
+    goals: ["cost", "risk"],
+    priorityTags: ["tires", "maintenance"],
+  },
+  {
+    id: "trans-driver-safety-hours",
+    pillar: "S",
+    title: "Driver safety: fatigue and hours management",
+    text: "Define rules for rest periods, monitor compliance, and log incidents/near-misses. Fatigue is a major accident driver.",
+    tags: ["people", "safety", "risk"],
+    sectors: ["Transportation"],
+    impact: "High",
+    effort: "Medium",
+    timeframe: "0–6 months",
+    goals: ["risk", "customer"],
+    priorityTags: ["fatigue", "safety"],
+  },
+  {
+    id: "trans-subcontractor-standards",
+    pillar: "G",
+    title: "Subcontractor standards for carriers",
+    text: "Require minimum H&S evidence, insurance, and compliance declarations. Track performance and incident history.",
+    tags: ["governance", "risk", "procurement"],
+    sectors: ["Transportation"],
+    impact: "High",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    goals: ["risk", "customer", "compliance"],
+    priorityTags: ["carriers", "screening"],
+  },
+  {
+    id: "trans-alt-fuels-plan",
+    pillar: "E",
+    title: "Alternative fuels / electrification feasibility plan",
+    text: "Assess routes suitable for EVs or alternative fuels, charging/refueling constraints, and define a 12–24 month pilot roadmap.",
+    tags: ["decarbonization", "transport", "strategy"],
+    sectors: ["Transportation"],
+    impact: "High",
+    effort: "High",
+    timeframe: "12+ months",
+    goals: ["decarbonization", "customer", "finance"],
+    sizes: ["medium", "large"],
+    priorityTags: ["ev", "pilot"],
+  },
 
-  // ---------------------------
+  // -------------------------------------------------
   // FURNITURE (WITH FSC/PEFC)
-  // ---------------------------
+  // -------------------------------------------------
   {
     id: "fur-fsc-pefc-coc",
     pillar: "G",
@@ -399,6 +1010,7 @@ export const SUGGESTIONS = [
     timeframe: "6–12 months",
     goals: ["customer", "compliance", "risk"],
     sizes: ["small", "medium", "large"],
+    turnoverTiers: ["small", "medium", "large"],
   },
   {
     id: "fur-eudr-readiness",
@@ -412,6 +1024,7 @@ export const SUGGESTIONS = [
     timeframe: "6–12 months",
     goals: ["risk", "compliance", "customer"],
     sizes: ["small", "medium", "large"],
+    turnoverTiers: ["small", "medium", "large"],
   },
   {
     id: "fur-bom-top-products",
@@ -449,6 +1062,75 @@ export const SUGGESTIONS = [
     timeframe: "0–6 months",
     goals: ["cost", "customer"],
     sizes: ["micro", "small", "medium", "large"],
+    turnoverTiers: ["micro", "small", "medium", "large"],
+  },
+  // NEW furniture additions
+  {
+    id: "fur-epd-lca-pilot",
+    pillar: "E",
+    title: "LCA/EPD pilot for 1 hero product",
+    text: "Select one best-selling product, compile BOM + processes, and run a lightweight LCA to prepare for EPD/customer requests.",
+    tags: ["lca", "epd", "materials", "customer"],
+    sectors: ["Furniture"],
+    impact: "High",
+    effort: "High",
+    timeframe: "12+ months",
+    goals: ["customer", "finance", "risk"],
+    sizes: ["medium", "large"],
+    priorityTags: ["epd", "product-footprint"],
+  },
+  {
+    id: "fur-design-for-disassembly",
+    pillar: "E",
+    title: "Design for disassembly (repairable furniture)",
+    text: "Improve repairability: standardize fasteners, modular parts, and publish simple repair guidance to extend product life.",
+    tags: ["circularity", "design", "waste"],
+    sectors: ["Furniture"],
+    impact: "Medium",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    goals: ["customer", "risk"],
+    priorityTags: ["repair", "modular"],
+  },
+  {
+    id: "fur-takeback-program",
+    pillar: "E",
+    title: "Pilot a take-back / refurbish program",
+    text: "Test take-back for a limited range, partner with refurbishers, and track recovered volumes and customer uptake.",
+    tags: ["circularity", "waste", "customer"],
+    sectors: ["Furniture"],
+    impact: "Medium",
+    effort: "High",
+    timeframe: "12+ months",
+    goals: ["customer", "finance"],
+    sizes: ["medium", "large"],
+    priorityTags: ["take-back", "refurbish"],
+  },
+  {
+    id: "fur-dust-exposure-control",
+    pillar: "S",
+    title: "Wood dust exposure controls + PPE training",
+    text: "Check extraction systems, housekeeping, PPE usage, and training records. Track incidents and inspection findings.",
+    tags: ["people", "health-safety", "wood", "risk"],
+    sectors: ["Furniture"],
+    impact: "High",
+    effort: "Medium",
+    timeframe: "0–6 months",
+    goals: ["risk", "customer", "compliance"],
+    priorityTags: ["wood-dust", "ppe"],
+  },
+  {
+    id: "fur-supplier-audit-lite",
+    pillar: "G",
+    title: "Supplier audit-lite for critical materials",
+    text: "For top suppliers, request certifications, legality declarations, and incident history; define escalation steps and re-check annually.",
+    tags: ["procurement", "risk", "traceability", "governance"],
+    sectors: ["Furniture"],
+    impact: "High",
+    effort: "Medium",
+    timeframe: "6–12 months",
+    goals: ["risk", "customer", "compliance"],
+    priorityTags: ["supplier", "audit-lite"],
   },
 ];
 
@@ -465,10 +1147,10 @@ export function filterSuggestions({ sector }) {
     return s.trim();
   };
 
-  const sec = normalize(sector);
+  const sec = normalize(sector).toLowerCase();
   return SUGGESTIONS.filter((s) => {
-    const secs = (s.sectors || []).map(normalize);
-    return secs.includes("*") || secs.includes("All") || secs.includes(sec);
+    const secs = (s.sectors || ["*"]).map(normalize).map((x) => x.toLowerCase());
+    return secs.includes("*") || secs.includes("all") || secs.includes(sec);
   });
 }
 

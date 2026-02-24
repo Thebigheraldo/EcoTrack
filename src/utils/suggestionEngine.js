@@ -1,60 +1,57 @@
 // src/utils/suggestionEngine.js
-// Ranking:
-// 1) Sector match (exact + "*" only; case-insensitive)
-// 2) Onboarding profile match (sizes/csrd/goals) — but DO NOT hard-exclude if profile is missing
-// 3) Weakest ESG pillar inferred from answers/questions
-// 4) High impact / low effort boosts
-
 import { SUGGESTIONS as SUGGESTIONS_POOL } from "./suggestions";
 
-/* ---------- helpers ---------- */
+/* ---------- basics ---------- */
 function safeUpper(v) {
   return (v == null ? "" : String(v)).toUpperCase();
 }
-
-function normalizeSectorName(v) {
+function normalizeText(v) {
   if (v == null) return "";
   let s = String(v);
-  try {
-    s = decodeURIComponent(s);
-  } catch {}
+  try { s = decodeURIComponent(s); } catch {}
   return s.trim();
 }
-
 function sectorKey(v) {
-  return normalizeSectorName(v).toLowerCase();
+  return normalizeText(v).toLowerCase();
 }
-
 function normalizeGoal(v) {
-  return (v == null ? "" : String(v)).trim().toLowerCase();
+  return normalizeText(v).toLowerCase();
+}
+function normalizePillar(v) {
+  const p = safeUpper(v);
+  return p === "E" || p === "S" || p === "G" ? p : null;
 }
 
+/* ---------- answer scoring ---------- */
 function getAnswerScore(v) {
   if (v == null) return null;
 
-  if (typeof v === "number") return v;
+  if (typeof v === "number" && !Number.isNaN(v)) return v;
 
   if (typeof v === "object") {
-    if (typeof v.score === "number") return v.score;
-    if (typeof v.value === "number") return v.value;
-    if (typeof v.points === "number") return v.points;
-    if (typeof v.label === "string") {
-      const t = v.label.toLowerCase();
-      if (t === "na" || t === "n/a" || t === "unknown") return null;
-      if (t === "no") return 0;
-      if (t === "yes") return 3;
-    }
+    if (typeof v.score === "number" && !Number.isNaN(v.score)) return v.score;
+    if (typeof v.value === "number" && !Number.isNaN(v.value)) return v.value;
+    if (typeof v.points === "number" && !Number.isNaN(v.points)) return v.points;
+
+    const label = typeof v.label === "string" ? v.label.trim().toLowerCase() : "";
+    if (label === "na" || label === "n/a" || label === "unknown") return null;
+    if (label === "no") return 0;
+    if (label === "yes") return 3;
     return null;
   }
 
-  const s = String(v).toLowerCase();
+  const s = String(v).trim().toLowerCase();
   if (s === "na" || s === "n/a" || s === "unknown") return null;
   if (s === "no") return 0;
   if (s === "yes") return 3;
+
+  const n = Number(s);
+  if (!Number.isNaN(n)) return n;
+
   return null;
 }
 
-function inferWorstPillar({ questions = [], answers = {} }) {
+function inferPillarAverages({ questions = [], answers = {} }) {
   const sums = { E: 0, S: 0, G: 0 };
   const counts = { E: 0, S: 0, G: 0 };
 
@@ -62,8 +59,7 @@ function inferWorstPillar({ questions = [], answers = {} }) {
     const id = q.id || q.qid || q.key;
     if (!id) continue;
 
-    const pillar = safeUpper(q.pillar || q.esg || q.category || "");
-    const p = pillar === "E" || pillar === "S" || pillar === "G" ? pillar : null;
+    const p = normalizePillar(q.pillar || q.esg || q.category || "");
     if (!p) continue;
 
     const score = getAnswerScore(answers[id]);
@@ -73,19 +69,24 @@ function inferWorstPillar({ questions = [], answers = {} }) {
     counts[p] += 1;
   }
 
-  const avgs = Object.entries(sums)
-    .map(([p, sum]) => [p, counts[p] ? sum / counts[p] : null])
-    .filter(([, avg]) => typeof avg === "number");
+  const out = { E: null, S: null, G: null };
+  for (const p of ["E", "S", "G"]) {
+    out[p] = counts[p] ? sums[p] / counts[p] : null;
+  }
+  return out;
+}
 
-  if (!avgs.length) return null;
-
-  avgs.sort((a, b) => a[1] - b[1]);
-  return avgs[0][0];
+export function inferWorstPillar({ questions = [], answers = {} }) {
+  const avgs = inferPillarAverages({ questions, answers });
+  const entries = Object.entries(avgs).filter(([, v]) => typeof v === "number");
+  if (!entries.length) return null;
+  entries.sort((a, b) => a[1] - b[1]);
+  return entries[0][0];
 }
 
 /* ---------- onboarding normalization ---------- */
 function sizeTierFromProfile(sizeRaw) {
-  if (sizeRaw == null) return null;
+  if (sizeRaw == null || sizeRaw === "") return null;
 
   if (typeof sizeRaw === "number") {
     const n = sizeRaw;
@@ -96,14 +97,13 @@ function sizeTierFromProfile(sizeRaw) {
   }
 
   const s = String(sizeRaw).toLowerCase().trim();
-
   if (s.includes("micro")) return "micro";
   if (s.includes("small")) return "small";
   if (s.includes("medium")) return "medium";
   if (s.includes("large")) return "large";
 
   const nums =
-    s.match(/\d+/g)?.map((x) => Number(x)).filter((x) => !Number.isNaN(x)) || [];
+    s.match(/\d+/g)?.map(Number).filter((x) => !Number.isNaN(x)) || [];
   if (nums.length) {
     const max = Math.max(...nums);
     if (max <= 10) return "micro";
@@ -112,16 +112,90 @@ function sizeTierFromProfile(sizeRaw) {
     return "large";
   }
 
-  if (s.includes("250")) return "large";
   return null;
 }
 
-function isCsrdInScope(profile) {
-  const v = profile?.csrdInScope ?? profile?.csrd ?? profile?.csrdScope;
-  if (typeof v === "boolean") return v;
-  const s = String(v ?? "").toLowerCase().trim();
-  if (s === "yes" || s === "true" || s === "in scope") return true;
-  return false;
+function turnoverTierFromProfile(turnoverRaw) {
+  if (turnoverRaw == null || turnoverRaw === "") return null;
+
+  const parseMoney = (x) => {
+    if (typeof x === "number" && !Number.isNaN(x)) return x;
+
+    const s = String(x).toLowerCase().replace(/[, ]/g, "").trim();
+    if (!s) return null;
+
+    const hasM = s.includes("m") || s.includes("million");
+    const hasK = s.includes("k") || s.includes("thousand");
+
+    const nums =
+      s.match(/\d+(\.\d+)?/g)?.map(Number).filter((v) => !Number.isNaN(v)) || [];
+    if (!nums.length) return null;
+
+    const base = Math.max(...nums);
+    if (hasM) return base * 1_000_000;
+    if (hasK) return base * 1_000;
+    return base;
+  };
+
+  const n = parseMoney(turnoverRaw);
+  if (typeof n !== "number" || Number.isNaN(n)) return null;
+
+  if (n <= 2_000_000) return "micro";
+  if (n <= 10_000_000) return "small";
+  if (n <= 50_000_000) return "medium";
+  return "large";
+}
+
+function timelineTierFromProfile(timelineRaw) {
+  if (timelineRaw == null || timelineRaw === "") return null;
+  const s = String(timelineRaw).toLowerCase().trim();
+
+  if (s.includes("0-6") || s.includes("0–6")) return "0-6";
+  if (s.includes("6-12") || s.includes("6–12")) return "6-12";
+  if (s.includes("12+")) return "12+";
+  if (s.includes("12")) return "12+";
+  if (s.includes("quick")) return "0-6";
+
+  const n = Number(s);
+  if (!Number.isNaN(n)) {
+    if (n <= 6) return "0-6";
+    if (n <= 12) return "6-12";
+    return "12+";
+  }
+  return null;
+}
+
+function timeframeTierFromSuggestion(timeframeRaw) {
+  if (!timeframeRaw) return null;
+  const s = String(timeframeRaw).toLowerCase().trim();
+  if (s.includes("0-6") || s.includes("0–6")) return "0-6";
+  if (s.includes("6-12") || s.includes("6–12")) return "6-12";
+  if (s.includes("12+")) return "12+";
+  if (s.includes("12")) return "12+";
+  if (s.includes("quick")) return "0-6";
+  return null;
+}
+
+function parseCsrdInScope(profile) {
+  const raw =
+    profile?.csrdInScope ??
+    profile?.csrdScope ??
+    profile?.csrd ??
+    profile?.csrdStatus ??
+    profile?.csrd_applicability;
+
+  if (typeof raw === "boolean") return raw;
+
+  const s = String(raw ?? "").toLowerCase().trim();
+  if (!s) return null;
+
+  if (s === "yes" || s === "true" || s.includes("in scope") || s.includes("applicable") || s.includes("required"))
+    return true;
+
+  if (s === "no" || s === "false" || s.includes("out of scope") || s.includes("not applicable") || s.includes("not required"))
+    return false;
+
+  return null;
 }
 
 function goalFromProfile(profile) {
@@ -129,101 +203,130 @@ function goalFromProfile(profile) {
   return normalizeGoal(g);
 }
 
-/* ---------- sector + metadata matching ---------- */
+/* ---------- pillar selection ---------- */
+function toPct(v) {
+  if (typeof v !== "number" || Number.isNaN(v)) return null;
+  if (v >= 0 && v <= 1) return Math.round(v * 100);
+  return Math.round(v);
+}
+
+function normalizePillarPercents(pillarPercents) {
+  if (!pillarPercents || typeof pillarPercents !== "object") return null;
+
+  const E = pillarPercents.E ?? pillarPercents.env ?? pillarPercents.environmental ?? null;
+  const S = pillarPercents.S ?? pillarPercents.soc ?? pillarPercents.social ?? null;
+  const G = pillarPercents.G ?? pillarPercents.gov ?? pillarPercents.governance ?? null;
+
+  const out = { E: toPct(E), S: toPct(S), G: toPct(G) };
+  if (out.E == null && out.S == null && out.G == null) return null;
+  return out;
+}
+
+function pillarsBelowThreshold(pillarPercents, threshold) {
+  const p = normalizePillarPercents(pillarPercents);
+  if (!p) return [];
+  const t = typeof threshold === "number" ? threshold : 50;
+
+  const out = [];
+  if (p.E != null && p.E < t) out.push("E");
+  if (p.S != null && p.S < t) out.push("S");
+  if (p.G != null && p.G < t) out.push("G");
+  return out;
+}
+
+function lowestNPillarsByPercents(pillarPercents, n = 2) {
+  const p = normalizePillarPercents(pillarPercents);
+  if (!p) return [];
+  const entries = Object.entries(p).filter(([, v]) => typeof v === "number");
+  if (!entries.length) return [];
+  entries.sort((a, b) => a[1] - b[1]);
+  return entries.slice(0, Math.max(1, n)).map(([k]) => k);
+}
+
+function lowestNPillarsByAnswers({ questions, answers, n = 2 }) {
+  const avgs = inferPillarAverages({ questions, answers });
+  const entries = Object.entries(avgs).filter(([, v]) => typeof v === "number");
+  if (!entries.length) return [];
+  entries.sort((a, b) => a[1] - b[1]);
+  return entries.slice(0, Math.max(1, n)).map(([k]) => k);
+}
+
+/* ---------- sector + onboarding constraints ---------- */
 function matchesSector(s, sector) {
   const sec = sectorKey(sector);
-  const sectors = (s.sectors || []).map(sectorKey);
-
-  // if no sector provided, allow all
+  const sectors = (s.sectors || ["*"]).map(sectorKey);
   if (!sec) return true;
-
-  // strict include: exact or "*"/"All" (case-insensitive)
   return sectors.includes(sec) || sectors.includes("*") || sectors.includes("all");
 }
 
-function isExactSector(s, sector) {
-  const sec = sectorKey(sector);
-  if (!sec) return false;
-  const sectors = (s.sectors || []).map(sectorKey);
-  return sectors.includes(sec);
-}
+function matchesOnboardingHard(s, profile) {
+  // Only true hard rule: CSRD-only requires CSRD clearly true
+  const csrd = parseCsrdInScope(profile);
+  if (s.csrdOnly && csrd !== true) return false;
 
-function matchesOnboarding(s, profile) {
-  // Hard exclusions:
-  if (s.csrdOnly && !isCsrdInScope(profile)) return false;
-
-  // Sizes: if suggestion declares sizes, require match ONLY if profile size is known
-  const tier = sizeTierFromProfile(profile?.size);
-  if (Array.isArray(s.sizes) && s.sizes.length) {
-    if (tier) {
-      const allowed = s.sizes.map((x) => String(x).toLowerCase().trim());
-      if (!allowed.includes(tier)) return false;
-    }
-    // if tier is missing, don't exclude (prevents empty dashboards)
-  }
-
-  // Goals: if suggestion declares goals, require match ONLY if profile goal is known
-  const g = goalFromProfile(profile);
-  if (Array.isArray(s.goals) && s.goals.length) {
-    if (g) {
-      const allowed = s.goals.map((x) => String(x).toLowerCase().trim());
-      const ok = allowed.some((a) => g.includes(a) || a.includes(g));
-      if (!ok) return false;
-    }
-    // if goal missing, don't exclude
+  // Size: hard filter only if suggestion declares sizes AND profile size is known
+  const sizeTier = sizeTierFromProfile(profile?.size);
+  if (Array.isArray(s.sizes) && s.sizes.length && sizeTier) {
+    const allowed = s.sizes.map((x) => String(x).toLowerCase().trim());
+    if (!allowed.includes(sizeTier)) return false;
   }
 
   return true;
 }
 
 /* ---------- scoring ---------- */
-function scoreSuggestion(s, sector, worstPillar, profile) {
+function scoreSuggestion(s, sector, profile, selectedPillars, worstPillar) {
   let score = 0;
 
   const sec = sectorKey(sector);
-  const sectors = (s.sectors || []).map(sectorKey);
+  const sectors = (s.sectors || ["*"]).map(sectorKey);
 
-  // Sector scoring:
+  // sector
   if (sectors.includes("*") || sectors.includes("all")) score += 2;
   if (sec && sectors.includes(sec)) score += 8;
 
-  // Onboarding boosts:
-  const tier = sizeTierFromProfile(profile?.size);
-  if (
-    tier &&
-    Array.isArray(s.sizes) &&
-    s.sizes.map((x) => String(x).toLowerCase().trim()).includes(tier)
-  ) {
-    score += 3;
+  // selected pillars (primary)
+  const sp = normalizePillar(s.pillar);
+  if (sp && selectedPillars.includes(sp)) score += 8;
+
+  // tie-break: weakest by answers
+  if (worstPillar && sp === worstPillar) score += 2;
+
+  // size soft boost
+  const sizeTier = sizeTierFromProfile(profile?.size);
+  if (sizeTier && Array.isArray(s.sizes) && s.sizes.map((x) => String(x).toLowerCase().trim()).includes(sizeTier)) {
+    score += 2;
   }
 
-  const csrd = isCsrdInScope(profile);
-  if (s.csrdOnly && csrd) score += 4;
+  // turnover soft boost
+  const turnTier = turnoverTierFromProfile(profile?.turnover);
+  if (turnTier && Array.isArray(s.turnoverTiers) && s.turnoverTiers.map((x) => String(x).toLowerCase().trim()).includes(turnTier)) {
+    score += 1;
+  }
 
+  // goal soft boost (DO NOT FILTER)
   const g = goalFromProfile(profile);
   if (g && Array.isArray(s.goals) && s.goals.length) {
     const allowed = s.goals.map((x) => String(x).toLowerCase().trim());
-    if (allowed.some((a) => g.includes(a) || a.includes(g))) score += 3;
+    const ok = allowed.some((a) => g.includes(a) || a.includes(g));
+    if (ok) score += 2;
   }
 
-  // Worst pillar boost:
-  if (worstPillar && safeUpper(s.pillar) === worstPillar) score += 5;
+  // timeline soft boost
+  const tl = timelineTierFromProfile(profile?.timeline);
+  const stl = timeframeTierFromSuggestion(s.timeframe);
+  if (tl && stl && tl === stl) score += 2;
 
-  // High impact / low effort boosts:
+  // impact/effort
   const impact = (s.impact || "").toLowerCase();
   const effort = (s.effort || "").toLowerCase();
   if (impact.includes("high")) score += 2;
   if (effort.includes("low")) score += 1;
 
-  // Furniture special-case (still works case-insensitive)
+  // Furniture tags boost
   if (sectorKey(sector) === "furniture") {
     const tags = (s.tags || []).map((t) => String(t).toLowerCase());
-    if (
-      tags.includes("fsc") ||
-      tags.includes("pefc") ||
-      tags.includes("wood") ||
-      tags.includes("traceability")
-    ) {
+    if (tags.includes("fsc") || tags.includes("pefc") || tags.includes("wood") || tags.includes("traceability")) {
       score += 2;
     }
   }
@@ -231,8 +334,37 @@ function scoreSuggestion(s, sector, worstPillar, profile) {
   return score;
 }
 
+function interleaveByPillar(ranked, pillars) {
+  const wanted = (pillars || []).map(normalizePillar).filter(Boolean);
+  if (wanted.length <= 1) return ranked;
+
+  const buckets = { E: [], S: [], G: [] };
+  for (const s of ranked) {
+    const p = normalizePillar(s.pillar);
+    if (p && buckets[p]) buckets[p].push(s);
+  }
+
+  const out = [];
+  let added = true;
+  while (added) {
+    added = false;
+    for (const p of wanted) {
+      if (buckets[p]?.length) {
+        out.push(buckets[p].shift());
+        added = true;
+      }
+    }
+  }
+  return out.concat(buckets.E, buckets.S, buckets.G);
+}
+
 /**
- * Main export used by SuggestionsPage / DetailsPage / Dashboard
+ * Main export
+ *
+ * New behavior:
+ * - If any pillar < threshold => select those pillars
+ * - Else => select lowest N pillars by % (default N=2)
+ * - If no pillar % available => select lowest N pillars by answers
  */
 export function getTailoredSuggestions({
   sector,
@@ -240,41 +372,43 @@ export function getTailoredSuggestions({
   answers,
   profile = {},
   limit = 20,
+  pillarPercents = null,
+  pillarThreshold = 50,
+  fallbackLowestNPillars = 2,
 }) {
-  const worst = inferWorstPillar({ questions, answers });
-
-  // 1) strict filter: sector-compatible only
+  // candidates: sector + hard onboarding
   const sectorCandidates = SUGGESTIONS_POOL.filter((s) => matchesSector(s, sector));
+  const metaCandidates = sectorCandidates.filter((s) => matchesOnboardingHard(s, profile));
 
-  // 2) filter by onboarding constraints (csrdOnly / sizes / goals)
-  const metaCandidates = sectorCandidates.filter((s) => matchesOnboarding(s, profile));
+  // select pillars
+  let selected = pillarsBelowThreshold(pillarPercents, pillarThreshold);
+  if (!selected.length) selected = lowestNPillarsByPercents(pillarPercents, fallbackLowestNPillars);
+  if (!selected.length) selected = lowestNPillarsByAnswers({ questions, answers, n: fallbackLowestNPillars });
 
-  // Split exact sector vs wildcard to prevent "*" drowning everything
-  const exact = metaCandidates.filter((s) => isExactSector(s, sector));
-  const wildcard = metaCandidates.filter((s) => !isExactSector(s, sector));
+  // filter to selected pillars (if we have selection)
+  let pillarCandidates = metaCandidates;
+  if (selected.length) {
+    const filtered = metaCandidates.filter((s) => {
+      const p = normalizePillar(s.pillar);
+      return p && selected.includes(p);
+    });
+    pillarCandidates = filtered.length ? filtered : metaCandidates;
+  }
 
-  const rank = (arr) =>
-    arr
-      .map((s) => ({
-        ...s,
-        _score: scoreSuggestion(s, sector, worst, profile),
-      }))
-      .sort((a, b) => b._score - a._score);
+  // tie-break pillar from answers (optional)
+  const worstByAnswers = inferWorstPillar({ questions, answers });
 
-  const rankedExact = rank(exact);
-  const rankedWild = rank(wildcard);
+  // rank
+  const ranked = pillarCandidates
+    .map((s) => ({
+      ...s,
+      _score: scoreSuggestion(s, sector, profile, selected, worstByAnswers),
+    }))
+    .sort((a, b) => b._score - a._score);
 
-  const out = [];
-  const exactQuota = rankedExact.length ? Math.ceil(limit * 0.7) : 0;
+  const finalRanked = selected.length > 1 ? interleaveByPillar(ranked, selected) : ranked;
 
-  out.push(...rankedExact.slice(0, exactQuota));
-  out.push(...rankedWild.slice(0, Math.max(0, limit - out.length)));
-
-  return out
-    .slice(0, Math.max(1, limit))
-    .map(({ _score, ...rest }) => rest);
+  return finalRanked.slice(0, Math.max(1, limit)).map(({ _score, ...rest }) => rest);
 }
-
-
 
 

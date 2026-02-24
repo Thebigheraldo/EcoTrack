@@ -13,13 +13,12 @@ import {
   deleteDoc,
 } from "firebase/firestore";
 import { sendPasswordResetEmail, deleteUser } from "firebase/auth";
-import { useNavigate } from "react-router-dom";
 import TopNav from "../components/TopNav";
 import "../components/landing.css";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-/* ---------- helpers ---------- */
+/* ---------- small helpers ---------- */
 const lbl = {
   display: "block",
   fontSize: 12,
@@ -36,7 +35,6 @@ const input = {
   background: "white",
 };
 
-/* ---------- small UI ---------- */
 function Card({ children, style }) {
   return (
     <div
@@ -55,20 +53,73 @@ function Card({ children, style }) {
   );
 }
 
-// options
+/* =========================================================
+   OPTIONS (IMPORTANT)
+   Keep OPTION values aligned with what onboarding saves.
+   Also includes legacy values to avoid "Select…" showing.
+========================================================= */
+
 const SECTORS = [
-  "Manufacturing",
-  "Agriculture/Food",
-  "Textile/Fashion",
-  "Tech",
-  "Finance",
-  "Construction",
-  "Furniture",
-  "Transportation",
+  { value: "Manufacturing", label: "Manufacturing" },
+  { value: "Agriculture/Food", label: "Agriculture/Food" },
+  { value: "Textile/Fashion", label: "Textile/Fashion" },
+  { value: "Tech", label: "Tech" },
+  { value: "Finance", label: "Finance" },
+  { value: "Construction", label: "Construction" },
+  { value: "Furniture", label: "Furniture" },
+  { value: "Transportation", label: "Transportation" },
 ];
-const SIZES = ["1-10", "11-50", "51-250", "251-1000", "1000+"];
-const TURNOVER = ["<€2M", "€2–10M", "€10–50M", "€50–250M", "€250M+"];
-const CSRD = ["In scope", "Out of scope", "Unsure"];
+
+// SIZE — include both "1-9" (onboarding screenshot) and your previous ones
+const SIZE_OPTIONS = [
+  { value: "1-9", label: "1–9" },
+  { value: "1-10", label: "1–10" },
+  { value: "10-49", label: "10–49" },
+  { value: "11-50", label: "11–50" },
+  { value: "50-249", label: "50–249" },
+  { value: "51-250", label: "51–250" },
+  { value: "250-999", label: "250–999" },
+  { value: "251-1000", label: "251–1000" },
+  { value: "1000+", label: "1000+" },
+];
+
+// TURNOVER — include "<10M" (onboarding screenshot) + your legacy € tiers
+const TURNOVER_OPTIONS = [
+  { value: "<10M", label: "<€10M" },
+  { value: "<€2M", label: "<€2M" },
+  { value: "€2–10M", label: "€2–10M" },
+  { value: "€10–50M", label: "€10–50M" },
+  { value: "€50–250M", label: "€50–250M" },
+  { value: "€250M+", label: "€250M+" },
+];
+
+// CSRD — include YES/NO (onboarding screenshot) + your legacy strings
+const CSRD_OPTIONS = [
+  { value: "YES", label: "Yes (in scope)" },
+  { value: "NO", label: "No (out of scope)" },
+  { value: "UNSURE", label: "Unsure" },
+  { value: "In scope", label: "In scope" },
+  { value: "Out of scope", label: "Out of scope" },
+  { value: "Unsure", label: "Unsure" },
+];
+
+/* If Firestore has a value not present in options, show it anyway */
+function withSavedValue(value, options) {
+  if (!value) return options;
+  const exists = options.some((o) => o.value === value);
+  if (exists) return options;
+  return [{ value, label: `Saved value: ${value}` }, ...options];
+}
+
+/* Read-first helper (supports legacy keys if your onboarding saved elsewhere) */
+function pickFirst(...vals) {
+  for (const v of vals) {
+    if (v === undefined || v === null) continue;
+    const s = String(v).trim();
+    if (s) return s;
+  }
+  return "";
+}
 
 /* ===========================
    PDF helpers (professional)
@@ -101,7 +152,8 @@ function formatDate(d) {
 
 function guessImgFormat(dataUrl) {
   const s = String(dataUrl || "");
-  if (s.startsWith("data:image/jpeg") || s.startsWith("data:image/jpg")) return "JPEG";
+  if (s.startsWith("data:image/jpeg") || s.startsWith("data:image/jpg"))
+    return "JPEG";
   if (s.startsWith("data:image/webp")) return "WEBP";
   return "PNG";
 }
@@ -109,14 +161,11 @@ function guessImgFormat(dataUrl) {
 function drawLogoKeepRatio(pdf, dataUrl, x, y, maxW, maxH) {
   if (!dataUrl) return { w: 0, h: 0 };
 
-  // jsPDF can read intrinsic size from the image data
   const props = pdf.getImageProperties(dataUrl);
   const iw = props?.width || 1;
   const ih = props?.height || 1;
-
   const ratio = iw / ih;
 
-  // fit inside maxW x maxH
   let w = maxW;
   let h = w / ratio;
 
@@ -131,8 +180,6 @@ function drawLogoKeepRatio(pdf, dataUrl, x, y, maxW, maxH) {
   return { w, h };
 }
 
-
-// Fetch a local asset (png) and convert to DataURL for jsPDF.addImage
 async function toDataUrl(url) {
   const res = await fetch(url);
   const blob = await res.blob();
@@ -145,38 +192,31 @@ async function toDataUrl(url) {
 }
 
 function drawDivider(pdf, x1, x2, y) {
-  pdf.setDrawColor(226, 232, 240); // slate-200
+  pdf.setDrawColor(226, 232, 240);
   pdf.setLineWidth(1);
   pdf.line(x1, y, x2, y);
 }
 
 function addHeader(pdf, PAGE, opts) {
   const { logoDataUrl, title, subtitle } = opts;
-
-  // Header area
   const headerY = PAGE.t - 46;
 
-  // Logo (left) — keep aspect ratio (NO squish)
-if (logoDataUrl) {
-  const maxW = 120; // <-- aumenta/riduci qui
-  const maxH = 28;  // <-- altezza max del logo
-  // headerY è già definita sopra nel tuo addHeader
-  drawLogoKeepRatio(pdf, logoDataUrl, PAGE.l, headerY + 10, maxW, maxH);
-}
+  if (logoDataUrl) {
+    const maxW = 120;
+    const maxH = 28;
+    drawLogoKeepRatio(pdf, logoDataUrl, PAGE.l, headerY + 10, maxW, maxH);
+  }
 
-
-  // Title (right)
   pdf.setFont("helvetica", "bold");
   pdf.setFontSize(14);
-  pdf.setTextColor(15, 23, 42); // slate-900
+  pdf.setTextColor(15, 23, 42);
   pdf.text(title, PAGE.rEdge, headerY + 18, { align: "right" });
 
   pdf.setFont("helvetica", "normal");
   pdf.setFontSize(10);
-  pdf.setTextColor(100, 116, 139); // slate-500
+  pdf.setTextColor(100, 116, 139);
   pdf.text(subtitle, PAGE.rEdge, headerY + 34, { align: "right" });
 
-  // Divider line under header
   drawDivider(pdf, PAGE.l, PAGE.rEdge, PAGE.t - 12);
 }
 
@@ -187,7 +227,7 @@ function addFooter(pdf, PAGE, pageNumber, pageCount) {
 
   pdf.setFont("helvetica", "normal");
   pdf.setFontSize(9);
-  pdf.setTextColor(148, 163, 184); // slate-400
+  pdf.setTextColor(148, 163, 184);
 
   pdf.text("EcoTrack by Viridis — User Data Export", PAGE.l, y);
   pdf.text(`Page ${pageNumber} / ${pageCount}`, PAGE.rEdge, y, {
@@ -198,11 +238,14 @@ function addFooter(pdf, PAGE, pageNumber, pageCount) {
 function sectionTitle(pdf, PAGE, text, y) {
   pdf.setFont("helvetica", "bold");
   pdf.setFontSize(13);
-  pdf.setTextColor(15, 23, 42); // slate-900
+  pdf.setTextColor(15, 23, 42);
   pdf.text(text, PAGE.l, y);
   return y + 10;
 }
 
+/* ===========================
+   COMPONENT
+=========================== */
 export default function ProfileSettings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -229,9 +272,6 @@ export default function ProfileSettings() {
   const [deleting, setDeleting] = useState(false);
   const [deleteErr, setDeleteErr] = useState("");
 
-  const navigate = useNavigate();
-
-  // load user profile
   useEffect(() => {
     (async () => {
       const u = auth.currentUser;
@@ -241,22 +281,57 @@ export default function ProfileSettings() {
       }
 
       setEmail(u.email || "");
+
       const ref = doc(db, "users", u.uid);
       const snap = await getDoc(ref);
 
       if (snap.exists()) {
         const d = snap.data() || {};
-        setName(d.name || d.profile?.name || (u.email?.split("@")[0] ?? ""));
         const p = d.profile || {};
-        setSector(p.sector || "");
-        setSize(p.size || "");
-        setCountry(p.country || "");
-        setTurnover(p.turnover || "");
-        setCsrd(p.csrd || "");
-        setGoal(p.goal || "");
-        setTimeline(p.timeline || "");
-
         const s = d.settings || {};
+        const ob = d.onboarding || d.onboardingProfile || {}; // legacy fallback if you ever used it
+
+        setName(
+          pickFirst(d.name, p.name, d.profile?.name, u.email?.split("@")[0], "")
+        );
+
+        // IMPORTANT: these pickFirst lines make Profile page resilient
+        // even if onboarding saved under different keys earlier.
+        setSector(pickFirst(p.sector, d.sector, ob.sector, ""));
+        setSize(
+          pickFirst(
+            p.size,
+            d.size,
+            d.companySize,
+            ob.size,
+            ob.companySize,
+            ""
+          )
+        );
+        setCountry(pickFirst(p.country, d.country, ob.country, ""));
+        setTurnover(
+          pickFirst(
+            p.turnover,
+            d.turnover,
+            d.turnoverTier,
+            ob.turnover,
+            ob.turnoverTier,
+            ""
+          )
+        );
+        setCsrd(
+          pickFirst(
+            p.csrd,
+            d.csrd,
+            d.csrdStatus,
+            ob.csrd,
+            ob.csrdStatus,
+            ""
+          )
+        );
+        setGoal(pickFirst(p.goal, d.goal, d.goalShort, ob.goal, ""));
+        setTimeline(pickFirst(p.timeline, d.timeline, ob.timeline, ""));
+
         setRemindAssessments(!!s.remindAssessments);
       } else {
         setName(u.email?.split("@")[0] || "");
@@ -271,6 +346,7 @@ export default function ProfileSettings() {
     setMsg("");
     setDeleteErr("");
     setSaving(true);
+
     try {
       const u = auth.currentUser;
       if (!u) throw new Error("Not authenticated");
@@ -320,6 +396,7 @@ export default function ProfileSettings() {
     setErr("");
     setMsg("");
     setDeleteErr("");
+
     try {
       const u = auth.currentUser;
       const targetEmail = email || u?.email || "";
@@ -381,7 +458,7 @@ export default function ProfileSettings() {
         batch.delete(docSnap.ref);
         ops++;
 
-        // Firestore batch limit is 500. Keep some buffer.
+        // Batch limit is 500; keep buffer
         if (ops >= 450) {
           commits.push(batch.commit());
           batch = writeBatch(db);
@@ -389,21 +466,16 @@ export default function ProfileSettings() {
         }
       });
 
-      if (ops > 0) {
-        commits.push(batch.commit());
-      }
-
-      // Ensure all commits are done
+      if (ops > 0) commits.push(batch.commit());
       await Promise.all(commits);
 
       // 2) Delete user document
-      const userDocRef = doc(db, "users", uid);
-      await deleteDoc(userDocRef);
+      await deleteDoc(doc(db, "users", uid));
 
       // 3) Delete auth user
       await deleteUser(u);
 
-      // 4) Redirect to login page (hard reload to avoid onboarding flicker)
+      // 4) Redirect
       window.location.replace("/login");
     } catch (e) {
       console.error("Account delete error:", e);
@@ -443,7 +515,7 @@ export default function ProfileSettings() {
         assessments.push({ id: docSnap.id, ...docSnap.data() });
       });
 
-      // Sort newest first (feels better)
+      // Sort newest first
       assessments.sort((a, b) => {
         const ad = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : 0;
         const bd = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : 0;
@@ -451,8 +523,10 @@ export default function ProfileSettings() {
       });
 
       // 3) Load logo
-      // Put your logo file here: src/assets/logo.png
-      const logoUrl = new URL("../assets/ecotrack-logo.png", import.meta.url).href;
+      const logoUrl = new URL(
+        "../assets/ecotrack-logo.png",
+        import.meta.url
+      ).href;
 
       let logoDataUrl = "";
       try {
@@ -484,7 +558,6 @@ export default function ProfileSettings() {
 
       const exportedAt = new Date();
 
-      // Page 1 header
       addHeader(pdf, PAGE, {
         logoDataUrl,
         title: "EcoTrack — Data Export",
@@ -493,10 +566,9 @@ export default function ProfileSettings() {
 
       let y = PAGE.t + 14;
 
-      // Summary block
       pdf.setFont("helvetica", "normal");
       pdf.setFontSize(11);
-      pdf.setTextColor(51, 65, 85); // slate-700
+      pdf.setTextColor(51, 65, 85);
 
       const emailLine = userData?.email || u.email || "-";
       const nameLine = userData?.name || userData?.profile?.name || "-";
@@ -514,7 +586,6 @@ export default function ProfileSettings() {
       drawDivider(pdf, PAGE.l, PAGE.rEdge, y);
       y += 18;
 
-      // User profile section
       y = sectionTitle(pdf, PAGE, "User profile", y);
 
       const profile = userData?.profile || {};
@@ -546,12 +617,12 @@ export default function ProfileSettings() {
           overflow: "linebreak",
         },
         headStyles: {
-          fillColor: [15, 23, 42], // slate-900
+          fillColor: [15, 23, 42],
           textColor: 255,
           fontStyle: "bold",
         },
         alternateRowStyles: {
-          fillColor: [248, 250, 252], // slate-50
+          fillColor: [248, 250, 252],
         },
         columnStyles: {
           0: { cellWidth: 140 },
@@ -562,7 +633,6 @@ export default function ProfileSettings() {
 
       y = pdf.lastAutoTable.finalY + 20;
 
-      // Assessments summary
       y = sectionTitle(pdf, PAGE, "Assessments summary", y);
 
       if (assessments.length === 0) {
@@ -612,7 +682,7 @@ export default function ProfileSettings() {
             valign: "middle",
           },
           headStyles: {
-            fillColor: [20, 83, 45], // deep green
+            fillColor: [20, 83, 45],
             textColor: 255,
             fontStyle: "bold",
           },
@@ -659,12 +729,17 @@ export default function ProfileSettings() {
         pdf.setTextColor(51, 65, 85);
 
         const overallPct =
-          typeof a.overall === "number" ? `${Math.round(a.overall * 100)}%` : "-";
+          typeof a.overall === "number"
+            ? `${Math.round(a.overall * 100)}%`
+            : "-";
 
         const ps = a.pillarScores || {};
-        const ePct = typeof ps.E === "number" ? `${Math.round(ps.E * 100)}%` : "-";
-        const sPct = typeof ps.S === "number" ? `${Math.round(ps.S * 100)}%` : "-";
-        const gPct = typeof ps.G === "number" ? `${Math.round(ps.G * 100)}%` : "-";
+        const ePct =
+          typeof ps.E === "number" ? `${Math.round(ps.E * 100)}%` : "-";
+        const sPct =
+          typeof ps.S === "number" ? `${Math.round(ps.S * 100)}%` : "-";
+        const gPct =
+          typeof ps.G === "number" ? `${Math.round(ps.G * 100)}%` : "-";
 
         const metaRows = [
           ["Assessment ID", a.id],
@@ -740,14 +815,13 @@ export default function ProfileSettings() {
         }
       });
 
-      // Add footers with page numbers
+      // Footers
       const pageCount = pdf.getNumberOfPages();
       for (let i = 1; i <= pageCount; i++) {
         pdf.setPage(i);
         addFooter(pdf, PAGE, i, pageCount);
       }
 
-      // Save
       const dateStr = new Date().toISOString().split("T")[0];
       pdf.save(`ecotrack-data-${dateStr}.pdf`);
 
@@ -840,9 +914,9 @@ export default function ProfileSettings() {
                   style={input}
                 >
                   <option value="">Select…</option>
-                  {SECTORS.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
+                  {withSavedValue(sector, SECTORS).map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
                     </option>
                   ))}
                 </select>
@@ -856,9 +930,9 @@ export default function ProfileSettings() {
                   style={input}
                 >
                   <option value="">Select…</option>
-                  {SIZES.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
+                  {withSavedValue(size, SIZE_OPTIONS).map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
                     </option>
                   ))}
                 </select>
@@ -872,9 +946,9 @@ export default function ProfileSettings() {
                   style={input}
                 >
                   <option value="">Select…</option>
-                  {TURNOVER.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
+                  {withSavedValue(turnover, TURNOVER_OPTIONS).map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
                     </option>
                   ))}
                 </select>
@@ -888,9 +962,9 @@ export default function ProfileSettings() {
                   style={input}
                 >
                   <option value="">Select…</option>
-                  {CSRD.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
+                  {withSavedValue(csrd, CSRD_OPTIONS).map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
                     </option>
                   ))}
                 </select>
@@ -903,7 +977,7 @@ export default function ProfileSettings() {
                   value={goal}
                   onChange={(e) => setGoal(e.target.value)}
                   style={input}
-                  placeholder="e.g. 50% Scope 2 reduction by 2026"
+                  placeholder="e.g. compliance"
                 />
               </div>
 
@@ -914,7 +988,7 @@ export default function ProfileSettings() {
                   value={timeline}
                   onChange={(e) => setTimeline(e.target.value)}
                   style={input}
-                  placeholder="e.g. 2025–2027 roadmap"
+                  placeholder="e.g. 6-12"
                 />
               </div>
             </div>
@@ -1051,9 +1125,9 @@ export default function ProfileSettings() {
                     marginLeft: 24,
                   }}
                 >
-                  We&apos;ll show a reminder banner inside EcoTrack when
-                  it&apos;s time to repeat your ESG assessment. No emails, and
-                  you can disable this at any time.
+                  We&apos;ll show a reminder banner inside EcoTrack when it&apos;s
+                  time to repeat your ESG assessment. No emails, and you can
+                  disable this at any time.
                 </p>
               </div>
             </div>

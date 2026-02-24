@@ -30,7 +30,6 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
 /* ---------- UI helpers ---------- */
-
 function Card({ children, style }) {
   return (
     <div
@@ -82,16 +81,7 @@ function formatDate(ts) {
   }
 }
 
-function formatDateISO(d) {
-  try {
-    return d.toISOString().slice(0, 10);
-  } catch {
-    return "—";
-  }
-}
-
-/* ---------- Normalization helpers ---------- */
-
+/* ---------- normalization helpers ---------- */
 function normalizeImpact(raw) {
   if (!raw) return "Medium";
   const v = String(raw).toLowerCase();
@@ -114,52 +104,74 @@ function normalizeTimeframe(raw) {
   if (v.includes("quick")) return "Quick win";
   if (v.includes("0-6") || v.includes("0–6")) return "0–6 months";
   if (v.includes("6-12") || v.includes("6–12")) return "6–12 months";
+  if (v.includes("12+")) return "12+ months";
   if (v.includes("12")) return "12+ months";
   return raw;
+}
+
+function pillarLabel(p) {
+  const x = String(p || "").toUpperCase();
+  if (x === "E") return "Environmental";
+  if (x === "S") return "Social";
+  if (x === "G") return "Governance";
+  return "—";
 }
 
 function sectorKey(v) {
   return String(v || "").trim().toLowerCase();
 }
 
-/* ---------- Compatibility adapter for stored answers ---------- */
-
+/* ---------- keep numeric answers when possible ---------- */
 function adaptAnswersForSuggestionEngine(rawAnswers) {
   const answers = rawAnswers || {};
   const out = {};
 
   for (const [qid, v] of Object.entries(answers)) {
-    if (typeof v === "string" || typeof v === "number") {
+    if (typeof v === "number") {
       out[qid] = v;
       continue;
     }
-
+    if (typeof v === "string") {
+      const s = v.trim().toLowerCase();
+      if (s === "na" || s === "n/a") out[qid] = "NA";
+      else if (s === "unknown") out[qid] = "Unknown";
+      else if (s === "no") out[qid] = 0;
+      else if (s === "yes") out[qid] = 3;
+      else {
+        const n = Number(s);
+        out[qid] = Number.isNaN(n) ? v : n;
+      }
+      continue;
+    }
     if (!v) {
       out[qid] = "Unknown";
       continue;
     }
 
-    const score = typeof v.score === "number" ? v.score : null;
+    const score =
+      typeof v.score === "number"
+        ? v.score
+        : typeof v.value === "number"
+        ? v.value
+        : typeof v.points === "number"
+        ? v.points
+        : null;
+
     const label = v.label != null ? String(v.label) : "";
+    const l = label.trim().toLowerCase();
 
-    if (label.toLowerCase() === "na") {
-      out[qid] = "NA";
-      continue;
-    }
-    if (label.toLowerCase() === "unknown") {
-      out[qid] = "Unknown";
-      continue;
-    }
-
-    if (score == null) out[qid] = "Unknown";
-    else out[qid] = score <= 1 ? "No" : "Yes";
+    if (l === "na" || l === "n/a") out[qid] = "NA";
+    else if (l === "unknown") out[qid] = "Unknown";
+    else if (l === "no") out[qid] = 0;
+    else if (l === "yes") out[qid] = 3;
+    else if (score != null) out[qid] = score;
+    else out[qid] = "Unknown";
   }
 
   return out;
 }
 
-/* ---------- Main page ---------- */
-
+/* ---------- main ---------- */
 export default function SuggestionsPage() {
   const navigate = useNavigate();
 
@@ -174,13 +186,13 @@ export default function SuggestionsPage() {
     size: "",
     country: "",
     turnover: "",
-    csrd: "Unsure",
-    goal: "compliance",
-    timeline: "6-12",
+    csrd: "",
+    goal: "",
+    timeline: "",
   });
 
   const [latestAnswers, setLatestAnswers] = useState({});
-  const [assessmentMeta, setAssessmentMeta] = useState(null); // {id, createdAt, status, overall, env, soc, gov}
+  const [assessmentMeta, setAssessmentMeta] = useState(null);
 
   const [suggestions, setSuggestions] = useState([]);
 
@@ -209,8 +221,7 @@ export default function SuggestionsPage() {
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState("recommend");
 
-  /* ---------- Load profile + assessments ---------- */
-
+  /* ---------- load profile + assessments ---------- */
   useEffect(() => {
     let alive = true;
 
@@ -224,7 +235,6 @@ export default function SuggestionsPage() {
       if (!alive) return;
       setUserId(u.uid);
 
-      // 1) Load user profile (name + onboarding fields)
       const userSnap = await getDoc(doc(db, "users", u.uid));
       const userData = userSnap.exists() ? userSnap.data() : {};
 
@@ -240,12 +250,17 @@ export default function SuggestionsPage() {
         size: profileDoc.size || "",
         country: profileDoc.country || "",
         turnover: profileDoc.turnover || "",
-        csrd: profileDoc.csrd || "Unsure",
-        goal: profileDoc.goal || "compliance",
-        timeline: profileDoc.timeline || "6-12",
+        csrd:
+          profileDoc.csrd ||
+          profileDoc.csrdInScope ||
+          profileDoc.csrdScope ||
+          profileDoc.csrdStatus ||
+          "",
+        goal: profileDoc.goal || profileDoc.primaryGoal || "",
+        timeline: profileDoc.timeline || "",
       });
 
-      // 2) Load last 5 assessments, choose latest submitted if possible
+      // Load last 5 assessments
       const col = collection(db, "users", u.uid, "assessments");
       const qy = query(col, orderBy("createdAt", "desc"), limit(5));
       const snaps = await getDocs(qy);
@@ -321,8 +336,7 @@ export default function SuggestionsPage() {
     };
   }, [navigate]);
 
-  /* ---------- Load action plan ---------- */
-
+  /* ---------- load action plan ---------- */
   useEffect(() => {
     (async () => {
       if (!userId) return;
@@ -343,25 +357,51 @@ export default function SuggestionsPage() {
     })();
   }, [userId]);
 
-  /* ---------- Build suggestions (sector + score + onboarding) ---------- */
+  /* ---------- pillar selection: below 50%, else lowest 2 ---------- */
+  const PILLAR_THRESHOLD = 50;
+  const LOWEST_PILLARS_FALLBACK = 2;
 
+  const pillarPercents = useMemo(() => {
+    if (!assessmentMeta) return null;
+
+    const toPct = (v) => {
+      if (typeof v !== "number" || Number.isNaN(v)) return null;
+      if (v >= 0 && v <= 1) return Math.round(v * 100);
+      return Math.round(v);
+    };
+
+    return {
+      E: toPct(assessmentMeta.env),
+      S: toPct(assessmentMeta.soc),
+      G: toPct(assessmentMeta.gov),
+    };
+  }, [assessmentMeta]);
+
+  const selectedPillarsInfo = useMemo(() => {
+    if (!pillarPercents) return { pillars: [], mode: "none" };
+
+    const entries = [
+      ["E", pillarPercents.E],
+      ["S", pillarPercents.S],
+      ["G", pillarPercents.G],
+    ].filter(([, v]) => typeof v === "number");
+
+    const below = entries.filter(([, v]) => v < PILLAR_THRESHOLD).map(([p]) => p);
+    if (below.length) return { pillars: below, mode: "threshold" };
+
+    // none below threshold => lowest 2
+    entries.sort((a, b) => a[1] - b[1]);
+    const lowest = entries.slice(0, Math.max(1, LOWEST_PILLARS_FALLBACK)).map(([p]) => p);
+    return { pillars: lowest, mode: "lowest" };
+  }, [pillarPercents]);
+
+  const selectedPillars = selectedPillarsInfo.pillars;
+
+  /* ---------- build suggestions ---------- */
   const answersForEngine = useMemo(
     () => adaptAnswersForSuggestionEngine(latestAnswers),
     [latestAnswers]
   );
-
-  const worstPillarKey = useMemo(() => {
-    if (!assessmentMeta) return null;
-    const { env, soc, gov } = assessmentMeta;
-    const entries = [
-      ["E", env],
-      ["S", soc],
-      ["G", gov],
-    ].filter(([, v]) => typeof v === "number");
-    if (!entries.length) return null;
-    entries.sort((a, b) => a[1] - b[1]);
-    return entries[0][0];
-  }, [assessmentMeta]);
 
   useEffect(() => {
     if (loading) return;
@@ -369,45 +409,66 @@ export default function SuggestionsPage() {
     const sec = String(sector || "").trim();
     const qs = getQuestionsForSector(sec) || [];
 
-    // Engine list (ranked) — IMPORTANT: pass profile
     let list = getTailoredSuggestions({
       sector: sec,
       questions: qs,
       answers: answersForEngine,
       profile,
       limit: 40,
+      pillarPercents,
+      pillarThreshold: PILLAR_THRESHOLD,
+      fallbackLowestNPillars: LOWEST_PILLARS_FALLBACK,
     });
 
     // Fallback if engine returns nothing
     if (!Array.isArray(list) || list.length === 0) {
       const wanted = sectorKey(sec);
       list = (Array.isArray(SUGGESTIONS) ? SUGGESTIONS : []).filter((s) => {
-        const secs = (s.sectors || []).map((x) => String(x || "").trim());
-        const secsKey = secs.map((x) => x.toLowerCase());
-        return secs.includes("*") || secs.includes("All") || secsKey.includes(wanted);
+        const secs = (s.sectors || []).map((x) => String(x || "").trim().toLowerCase());
+        return secs.includes("*") || secs.includes("all") || secs.includes(wanted);
       });
     }
 
-    // Enrich for UI
-    const enriched = (list || []).map((s, idx) => ({
-      ...s,
-      id: s.id || `suggestion-${idx}`,
-      pillar: (s.pillar || "").toUpperCase(),
-      impact: normalizeImpact(s.impact),
-      effort: normalizeEffort(s.effort),
-      timeframe: normalizeTimeframe(s.timeframe),
-      // lightweight “why”: strongest signal is weakest pillar
-      _why:
-        worstPillarKey && (s.pillar || "").toUpperCase() === worstPillarKey
-          ? "Targets your weakest ESG pillar."
-          : "",
-    }));
+    const enriched = (list || []).map((s, idx) => {
+      const p = (s.pillar || "").toUpperCase();
+      const pct = pillarPercents?.[p];
+
+      let why = "";
+      if (selectedPillars.includes(p)) {
+        if (selectedPillarsInfo.mode === "threshold") {
+          why = pct != null
+            ? `${pillarLabel(p)} is below ${PILLAR_THRESHOLD}% (${pct}%).`
+            : `${pillarLabel(p)} is below ${PILLAR_THRESHOLD}%.`;
+        } else if (selectedPillarsInfo.mode === "lowest") {
+          why = pct != null
+            ? `${pillarLabel(p)} is among your lowest pillars (${pct}%).`
+            : `${pillarLabel(p)} is among your lowest pillars.`;
+        }
+      }
+
+      return {
+        ...s,
+        id: s.id || `suggestion-${idx}`,
+        pillar: p,
+        impact: normalizeImpact(s.impact),
+        effort: normalizeEffort(s.effort),
+        timeframe: normalizeTimeframe(s.timeframe),
+        _why: why,
+      };
+    });
 
     setSuggestions(enriched);
-  }, [loading, sector, answersForEngine, profile, worstPillarKey]);
+  }, [
+    loading,
+    sector,
+    answersForEngine,
+    profile,
+    pillarPercents,
+    selectedPillars,
+    selectedPillarsInfo.mode,
+  ]);
 
-  /* ---------- Derived values ---------- */
-
+  /* ---------- derived ---------- */
   const sourceHint =
     source === "assessment"
       ? "Based on your latest ESG assessment + onboarding profile"
@@ -417,14 +478,12 @@ export default function SuggestionsPage() {
 
   const hasSuggestions = suggestions && suggestions.length > 0;
 
-  /* ---------- Filters, search, sort ---------- */
-
+  /* ---------- filters/search/sort ---------- */
   const filteredAndSortedSuggestions = useMemo(() => {
     let list = [...suggestions];
 
-    if (filterPillar) {
-      list = list.filter((s) => (s.pillar || "").toUpperCase() === filterPillar);
-    }
+    if (filterPillar) list = list.filter((s) => (s.pillar || "") === filterPillar);
+
     if (filterImpact) {
       list = list.filter(
         (s) => (s.impact || "").toLowerCase() === filterImpact.toLowerCase()
@@ -439,7 +498,7 @@ export default function SuggestionsPage() {
       const key = filterTimeframe.toLowerCase();
       list = list.filter((s) => {
         const tf = (s.timeframe || "").toLowerCase();
-        if (key === "quick") return tf.includes("quick");
+        if (key === "quick") return tf.includes("quick") || tf.includes("0–6") || tf.includes("0-6");
         if (key === "0–6" || key === "0-6") return tf.includes("0–6") || tf.includes("0-6");
         if (key === "6–12" || key === "6-12") return tf.includes("6–12") || tf.includes("6-12");
         if (key === "12") return tf.includes("12");
@@ -469,7 +528,7 @@ export default function SuggestionsPage() {
         const tb = (b.title || b.text || "").toLowerCase();
         return ta.localeCompare(tb);
       }
-      // recommend: weakest pillar first, then high impact/low effort
+      // recommend: prioritize selected pillars via _why, then impact/effort
       const wa = a._why ? 1 : 0;
       const wb = b._why ? 1 : 0;
       if (wb !== wa) return wb - wa;
@@ -491,8 +550,7 @@ export default function SuggestionsPage() {
     sortBy,
   ]);
 
-  /* ---------- Action plan helpers ---------- */
-
+  /* ---------- action plan helpers ---------- */
   const isInPlan = (suggestion) =>
     actionPlan.some((item) => item.suggestionId === suggestion.id);
 
@@ -502,9 +560,7 @@ export default function SuggestionsPage() {
 
     setPlanError("");
 
-    const text =
-      suggestion.text ||
-      (typeof suggestion === "string" ? suggestion : "Action item");
+    const text = suggestion.text || "Action item";
 
     const payload = {
       suggestionId: suggestion.id,
@@ -566,8 +622,7 @@ export default function SuggestionsPage() {
     }
   };
 
-  /* ---------- Export Action Plan PDF (kept) ---------- */
-
+  /* ---------- Export Action Plan PDF (kept as-is) ---------- */
   const handleExportPlanPDF = async () => {
     if (!actionPlan.length) return;
 
@@ -600,10 +655,7 @@ export default function SuggestionsPage() {
       return { total, done, open, pct };
     })();
 
-    const openItems = actionPlan
-      .filter((i) => !i.completed)
-      .slice()
-      .sort((a, b) => (normalizeImpact(b.impact) > normalizeImpact(a.impact) ? 1 : -1));
+    const openItems = actionPlan.filter((i) => !i.completed);
 
     const pdf = new jsPDF({ unit: "pt", format: "a4" });
     const PAGE = {
@@ -667,94 +719,32 @@ export default function SuggestionsPage() {
       pdf.text(`Total: ${completion.total}`, rightX, cardY + 42);
       pdf.text(`Done: ${completion.done}`, rightX + 80, cardY + 42);
       pdf.text(`Open: ${completion.open}`, rightX + 150, cardY + 42);
-
-      const barX = rightX;
-      const barY = cardY + 54;
-      const barW = 190;
-      const barH2 = 8;
-
-      pdf.setDrawColor(...BRAND.line);
-      pdf.setFillColor(...BRAND.bg);
-      pdf.roundedRect(barX, barY, barW, barH2, 4, 4, "FD");
-
-      pdf.setFillColor(...BRAND.green);
-      pdf.roundedRect(barX, barY, Math.max(6, (barW * completion.pct) / 100), barH2, 4, 4, "F");
-
-      pdf.setFont("helvetica", "bold");
-      pdf.setTextColor(...BRAND.dark);
-      pdf.text(`${completion.pct}%`, barX + barW + 10, barY + 8);
-    };
-
-    const drawFooter = (pageNumber, pageCount) => {
-      const y = PAGE.h - 18;
-      pdf.setDrawColor(...BRAND.line);
-      pdf.line(PAGE.l, PAGE.h - PAGE.b + 10, PAGE.w - PAGE.r, PAGE.h - PAGE.b + 10);
-
-      pdf.setFont("helvetica", "normal");
-      pdf.setFontSize(9);
-      pdf.setTextColor(...BRAND.muted);
-      pdf.text("EcoTrack — Internal use", PAGE.l, y);
-      pdf.text(`Page ${pageNumber} of ${pageCount}`, PAGE.w - PAGE.r - 90, y);
     };
 
     drawHeader();
 
-    let cursorY = 180;
-
-    pdf.setFont("helvetica", "bold");
-    pdf.setFontSize(12);
-    pdf.setTextColor(...BRAND.dark);
-    pdf.text("Open actions", PAGE.l, cursorY);
-
-    const rows = openItems.length
-      ? openItems.map((it, idx) => [
-          idx + 1,
-          safeText(it.text),
-          normalizeImpact(it.impact),
-          normalizeEffort(it.effort),
-          normalizeTimeframe(it.timeframe),
-        ])
-      : [["—", "No open actions.", "—", "—", "—"]];
-
     autoTable(pdf, {
-      startY: cursorY + 14,
+      startY: 180,
       head: [["#", "Action", "Impact", "Effort", "Timeframe"]],
-      body: rows,
+      body: openItems.length
+        ? openItems.map((it, idx) => [
+            idx + 1,
+            safeText(it.text),
+            safeText(it.impact),
+            safeText(it.effort),
+            safeText(it.timeframe),
+          ])
+        : [["—", "No open actions.", "—", "—", "—"]],
       theme: "striped",
       margin: { left: PAGE.l, right: PAGE.r },
-      styles: {
-        font: "helvetica",
-        fontSize: 10,
-        cellPadding: 6,
-        lineColor: BRAND.line,
-        lineWidth: 0.5,
-        overflow: "linebreak",
-        valign: "top",
-      },
-      headStyles: {
-        fillColor: BRAND.green,
-        textColor: 255,
-        fontStyle: "bold",
-      },
-      columnStyles: {
-        0: { cellWidth: 26 },
-        1: { cellWidth: PAGE.w - PAGE.l - PAGE.r - (26 + 70 + 62 + 90) },
-        2: { cellWidth: 70 },
-        3: { cellWidth: 62 },
-        4: { cellWidth: 90 },
-      },
-      didDrawPage: (data) => {
-        const pageCount = pdf.internal.getNumberOfPages();
-        drawFooter(data.pageNumber, pageCount);
-      },
+      styles: { font: "helvetica", fontSize: 10, cellPadding: 6 },
+      headStyles: { fillColor: BRAND.green, textColor: 255, fontStyle: "bold" },
     });
 
-    const fileName = `EcoTrack_ActionPlan_${new Date().toISOString().slice(0, 10)}.pdf`;
-    pdf.save(fileName);
+    pdf.save(`EcoTrack_ActionPlan_${new Date().toISOString().slice(0, 10)}.pdf`);
   };
 
-  /* ---------- Loading state ---------- */
-
+  /* ---------- loading ---------- */
   if (loading) {
     return (
       <div className="landing" style={{ alignItems: "stretch" }}>
@@ -781,10 +771,9 @@ export default function SuggestionsPage() {
     );
   }
 
-  /* ---------- Render: Action Plan ---------- */
-
+  /* ---------- render: action plan ---------- */
   const completedCount = actionPlan.filter((i) => i.completed).length;
-  const completionRatio = actionPlan.length > 0 ? completedCount / actionPlan.length : 0;
+  const completionRatio = actionPlan.length ? completedCount / actionPlan.length : 0;
 
   const renderActionPlanCard = () => (
     <Card>
@@ -867,27 +856,18 @@ export default function SuggestionsPage() {
                   cursor: "pointer",
                   flexShrink: 0,
                 }}
-                aria-label={item.completed ? "Mark as not completed" : "Mark as completed"}
               >
                 ✓
               </button>
 
               <div style={{ flex: 1 }}>
-                <div
-                  style={{
-                    fontSize: 13,
-                    fontWeight: 500,
-                    color: "#0f172a",
-                    textDecoration: item.completed ? "line-through" : "none",
-                  }}
-                >
+                <div style={{ fontSize: 13, fontWeight: 500, color: "#0f172a", textDecoration: item.completed ? "line-through" : "none" }}>
                   {item.text}
                 </div>
-
                 <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 4, fontSize: 11, color: "#64748b" }}>
-                  {item.impact && <Badge>{normalizeImpact(item.impact)}</Badge>}
-                  {item.effort && <Badge>Effort: {normalizeEffort(item.effort)}</Badge>}
-                  {item.timeframe && <Badge>{normalizeTimeframe(item.timeframe)}</Badge>}
+                  {item.impact && <Badge>{item.impact}</Badge>}
+                  {item.effort && <Badge>Effort: {item.effort}</Badge>}
+                  {item.timeframe && <Badge>{item.timeframe}</Badge>}
                 </div>
               </div>
 
@@ -895,7 +875,6 @@ export default function SuggestionsPage() {
                 type="button"
                 onClick={() => handleRemoveFromPlan(item)}
                 style={{ border: "none", background: "transparent", color: "#94a3b8", fontSize: 14, cursor: "pointer" }}
-                aria-label="Remove from plan"
               >
                 ×
               </button>
@@ -906,8 +885,7 @@ export default function SuggestionsPage() {
     </Card>
   );
 
-  /* ---------- Render: Suggestions ---------- */
-
+  /* ---------- render: suggestions ---------- */
   const renderSuggestionsColumn = () => (
     <div style={{ display: "grid", gap: 12 }}>
       {hasSuggestions ? (
@@ -992,22 +970,20 @@ export default function SuggestionsPage() {
     </div>
   );
 
-  /* ---------- Main layout ---------- */
-
+  /* ---------- layout ---------- */
   return (
     <div className="landing" style={{ alignItems: "stretch" }}>
       <TopNav />
 
       <main className="landing__main" style={{ maxWidth: 1200, width: "100%", paddingTop: 80 }}>
         <div style={{ display: "grid", gap: 16 }}>
-          {/* Header */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
             <div>
               <h1 className="landing__title" style={{ marginBottom: 4 }}>
                 Suggestions
               </h1>
               <div className="landing__subtitle" style={{ opacity: 0.9, fontSize: 14 }}>
-                Sector + score + onboarding based suggestions. Add what matters to your action plan.
+                If any pillar is below {PILLAR_THRESHOLD}%, we target it. Otherwise we target your {LOWEST_PILLARS_FALLBACK} lowest pillars.
               </div>
             </div>
 
@@ -1016,7 +992,6 @@ export default function SuggestionsPage() {
             </div>
           </div>
 
-          {/* Context + CTA */}
           <Card>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 12, justifyContent: "space-between", alignItems: "center" }}>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -1026,6 +1001,7 @@ export default function SuggestionsPage() {
                   <Badge>Goal: {profile.goal || "—"}</Badge>
                   <Badge>CSRD: {profile.csrd || "—"}</Badge>
                   <Badge>Size: {profile.size || "—"}</Badge>
+                  <Badge>Turnover: {profile.turnover || "—"}</Badge>
                   <Badge>Timeline: {profile.timeline || "—"}</Badge>
                 </div>
 
@@ -1043,7 +1019,11 @@ export default function SuggestionsPage() {
                         {assessmentMeta.gov != null && <span>· G: {assessmentMeta.gov}%</span>}
                       </>
                     )}
-                    {worstPillarKey && <span>• Weakest: {worstPillarKey}</span>}
+                    {!!selectedPillars.length && (
+                      <span>
+                        • Targeting: {selectedPillars.join(", ")} ({selectedPillarsInfo.mode === "threshold" ? `below ${PILLAR_THRESHOLD}%` : `lowest ${LOWEST_PILLARS_FALLBACK}`})
+                      </span>
+                    )}
                   </div>
                 ) : (
                   <div style={{ fontSize: 12, color: "#94a3b8" }}>
@@ -1058,7 +1038,7 @@ export default function SuggestionsPage() {
             </div>
           </Card>
 
-          {/* Filters + search + sort */}
+          {/* Filters */}
           <Card>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
               <input
@@ -1076,44 +1056,28 @@ export default function SuggestionsPage() {
                 }}
               />
 
-              <select
-                value={filterPillar}
-                onChange={(e) => setFilterPillar(e.target.value)}
-                style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}
-              >
+              <select value={filterPillar} onChange={(e) => setFilterPillar(e.target.value)} style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}>
                 <option value="">All pillars</option>
                 <option value="E">Environmental</option>
                 <option value="S">Social</option>
                 <option value="G">Governance</option>
               </select>
 
-              <select
-                value={filterImpact}
-                onChange={(e) => setFilterImpact(e.target.value)}
-                style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}
-              >
+              <select value={filterImpact} onChange={(e) => setFilterImpact(e.target.value)} style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}>
                 <option value="">Any impact</option>
                 <option value="High">High</option>
                 <option value="Medium">Medium</option>
                 <option value="Low">Low</option>
               </select>
 
-              <select
-                value={filterEffort}
-                onChange={(e) => setFilterEffort(e.target.value)}
-                style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}
-              >
+              <select value={filterEffort} onChange={(e) => setFilterEffort(e.target.value)} style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}>
                 <option value="">Any effort</option>
                 <option value="Low">Low effort</option>
                 <option value="Medium">Medium</option>
                 <option value="High">High</option>
               </select>
 
-              <select
-                value={filterTimeframe}
-                onChange={(e) => setFilterTimeframe(e.target.value)}
-                style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}
-              >
+              <select value={filterTimeframe} onChange={(e) => setFilterTimeframe(e.target.value)} style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}>
                 <option value="">Any timeframe</option>
                 <option value="0–6">0–6 months</option>
                 <option value="6–12">6–12 months</option>
@@ -1121,11 +1085,7 @@ export default function SuggestionsPage() {
                 <option value="quick">Quick wins</option>
               </select>
 
-              <select
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value)}
-                style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}
-              >
+              <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}>
                 <option value="recommend">Recommended</option>
                 <option value="impact">High impact first</option>
                 <option value="effort">Low effort first</option>
@@ -1152,9 +1112,7 @@ export default function SuggestionsPage() {
       <style>
         {`
           @keyframes spin { to { transform: rotate(360deg); } }
-          @media (max-width: 900px) {
-            .landing__main { padding: 72px 16px 24px; }
-          }
+          @media (max-width: 900px) { .landing__main { padding: 72px 16px 24px; } }
         `}
       </style>
     </div>
