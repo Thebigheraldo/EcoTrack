@@ -1,3 +1,4 @@
+// src/pages/LoginPage.jsx
 import React, { useState } from "react";
 import { useNavigate, useLocation, Link } from "react-router-dom";
 import {
@@ -8,8 +9,16 @@ import { auth, db } from "../firebase";
 import { doc, getDoc } from "firebase/firestore";
 import "../components/landing.css";
 
+const LEGAL_LINKS = [
+  { to: "/terms-and-conditions", label: "Terms of Use" },
+  { to: "/privacy-policy", label: "Privacy Policy" },
+  { to: "/refund-policy", label: "Refund Policy" },
+  { to: "/cookie-policy", label: "Cookie Policy" },
+  { to: "/dpa", label: "DPA" },
+  { to: "/legal-notice", label: "Legal Notice" },
+];
+
 function isSubscriptionActive(subscriptionStatus) {
-  // Adatta a come vuoi gestire i piani
   return subscriptionStatus === "active" || subscriptionStatus === "trialing";
 }
 
@@ -17,7 +26,7 @@ export default function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // dove voleva andare l’utente prima di essere rimandato al login
+  // Where the user wanted to go before being redirected to login
   const from = location.state?.from?.pathname || "/dashboard";
 
   const [email, setEmail] = useState("");
@@ -39,9 +48,10 @@ export default function LoginPage() {
         email.trim(),
         password
       );
+
       const uid = cred.user.uid;
 
-      // 2) Load user doc (role + onboarding + subscription)
+      // 2) Load user doc: role + onboarding + subscription
       let role = "user";
       let onboardingCompleted = false;
       let subscriptionStatus = "inactive";
@@ -58,7 +68,7 @@ export default function LoginPage() {
         }
       } catch (e) {
         console.error("Error reading user doc on login", e);
-        // fallback safe: treat as non-subscribed
+        // Fallback safe: treat as non-subscribed
       }
 
       // 3) Routing logic
@@ -69,19 +79,22 @@ export default function LoginPage() {
 
       const active = isSubscriptionActive(subscriptionStatus);
 
-      // Se non è attivo → pricing
+      // Not active → pricing page
       if (!active) {
-        navigate("/pricing", { replace: true, state: { from: { pathname: from } } });
+        navigate("/pricing", {
+          replace: true,
+          state: { from: { pathname: from } },
+        });
         return;
       }
 
-      // Se è attivo ma non ha completato onboarding → onboarding
+      // Active but onboarding not completed → onboarding
       if (!onboardingCompleted) {
         navigate("/onboarding", { replace: true });
         return;
       }
 
-      // Utente attivo + onboarded → torna dove voleva andare (o dashboard)
+      // Active + onboarded → go back to intended page or dashboard
       navigate(from, { replace: true });
     } catch (e) {
       console.error(e);
@@ -96,15 +109,17 @@ export default function LoginPage() {
     setInfo("");
 
     const trimmedEmail = email.trim();
+
     if (!trimmedEmail) {
       setErr('Please enter your email and then click "Forgot my password".');
       return;
     }
 
     setBusy(true);
+
     try {
       await sendPasswordResetEmail(auth, trimmedEmail);
-      setInfo("Password reset email sent. Check your inbox (and spam folder).");
+      setInfo("Password reset email sent. Check your inbox and spam folder.");
     } catch (e) {
       console.error(e);
       setErr(e?.message || "Failed to send password reset email.");
@@ -117,7 +132,10 @@ export default function LoginPage() {
     <div className="landing" style={{ alignItems: "center" }}>
       <main className="landing__main" style={{ maxWidth: 420 }}>
         <h1 className="landing__title">Welcome back</h1>
-        <p className="landing__subtitle">Log in to access your assessments.</p>
+
+        <p className="landing__subtitle">
+          Log in to access your assessments.
+        </p>
 
         <form onSubmit={handleLogin} style={{ marginTop: 16 }}>
           <input
@@ -130,6 +148,7 @@ export default function LoginPage() {
             required
             autoComplete="email"
           />
+
           <input
             type="password"
             placeholder="Password"
@@ -168,13 +187,13 @@ export default function LoginPage() {
             {err}
           </p>
         )}
+
         {info && (
           <p style={{ color: "#059669", marginTop: 8, fontSize: 14 }}>
             {info}
           </p>
         )}
 
-        {/* Niente "Sign up" qui: funnel a pagamento → manda ai piani */}
         <p className="landing__subtitle" style={{ marginTop: 14 }}>
           First time here?{" "}
           <Link
@@ -184,8 +203,65 @@ export default function LoginPage() {
             See plans & subscribe
           </Link>
         </p>
+
+        <LoginLegalFooter />
       </main>
     </div>
+  );
+}
+
+function LoginLegalFooter() {
+  return (
+    <footer
+      style={{
+        marginTop: "2rem",
+        paddingTop: "1.25rem",
+        borderTop: "1px solid #e5e7eb",
+        textAlign: "center",
+        fontSize: "0.8rem",
+        color: "#64748b",
+      }}
+    >
+      <div
+        style={{
+          marginBottom: 8,
+          fontSize: 12,
+          color: "#64748b",
+        }}
+      >
+        Legal documents
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          gap: "0.65rem",
+          justifyContent: "center",
+          alignItems: "center",
+          flexWrap: "wrap",
+          lineHeight: 1.8,
+        }}
+      >
+        {LEGAL_LINKS.map((item, index) => (
+          <React.Fragment key={item.to}>
+            <Link
+              to={item.to}
+              style={{
+                color: "#148A58",
+                textDecoration: "none",
+                fontWeight: 500,
+              }}
+            >
+              {item.label}
+            </Link>
+
+            {index < LEGAL_LINKS.length - 1 && (
+              <span style={{ color: "#CBD5E1" }}>•</span>
+            )}
+          </React.Fragment>
+        ))}
+      </div>
+    </footer>
   );
 }
 

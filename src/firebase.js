@@ -4,6 +4,7 @@ import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 import { getFunctions } from "firebase/functions";
 
+
 // ⬇️ paste your real config from Firebase Console → Project settings → Web app
 const firebaseConfig = {
   apiKey: "AIzaSyBnnlTxAitNX-dFPqfldKBzfaZcjJc9SDI",

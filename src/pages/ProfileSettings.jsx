@@ -1,6 +1,7 @@
 // src/pages/ProfileSettings.jsx
 import React, { useEffect, useState } from "react";
-import { auth, db } from "../firebase";
+import { Link } from "react-router-dom";
+import { auth, db, functions } from "../firebase";
 import {
   doc,
   getDoc,
@@ -9,10 +10,9 @@ import {
   serverTimestamp,
   collection,
   getDocs,
-  writeBatch,
-  deleteDoc,
 } from "firebase/firestore";
-import { sendPasswordResetEmail, deleteUser } from "firebase/auth";
+import { sendPasswordResetEmail } from "firebase/auth";
+import { httpsCallable } from "firebase/functions";
 import TopNav from "../components/TopNav";
 import "../components/landing.css";
 import jsPDF from "jspdf";
@@ -35,6 +35,21 @@ const input = {
   background: "white",
 };
 
+const legalLink = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  gap: 10,
+  padding: "12px 14px",
+  borderRadius: 12,
+  border: "1px solid #e2e8f0",
+  background: "#f8fafc",
+  color: "#0f172a",
+  textDecoration: "none",
+  fontSize: 13,
+  fontWeight: 600,
+};
+
 function Card({ children, style }) {
   return (
     <div
@@ -54,9 +69,7 @@ function Card({ children, style }) {
 }
 
 /* =========================================================
-   OPTIONS (IMPORTANT)
-   Keep OPTION values aligned with what onboarding saves.
-   Also includes legacy values to avoid "Select…" showing.
+   OPTIONS
 ========================================================= */
 
 const SECTORS = [
@@ -70,7 +83,6 @@ const SECTORS = [
   { value: "Transportation", label: "Transportation" },
 ];
 
-// SIZE — include both "1-9" (onboarding screenshot) and your previous ones
 const SIZE_OPTIONS = [
   { value: "1-9", label: "1–9" },
   { value: "1-10", label: "1–10" },
@@ -83,7 +95,6 @@ const SIZE_OPTIONS = [
   { value: "1000+", label: "1000+" },
 ];
 
-// TURNOVER — include "<10M" (onboarding screenshot) + your legacy € tiers
 const TURNOVER_OPTIONS = [
   { value: "<10M", label: "<€10M" },
   { value: "<€2M", label: "<€2M" },
@@ -93,7 +104,6 @@ const TURNOVER_OPTIONS = [
   { value: "€250M+", label: "€250M+" },
 ];
 
-// CSRD — include YES/NO (onboarding screenshot) + your legacy strings
 const CSRD_OPTIONS = [
   { value: "YES", label: "Yes (in scope)" },
   { value: "NO", label: "No (out of scope)" },
@@ -103,7 +113,6 @@ const CSRD_OPTIONS = [
   { value: "Unsure", label: "Unsure" },
 ];
 
-/* If Firestore has a value not present in options, show it anyway */
 function withSavedValue(value, options) {
   if (!value) return options;
   const exists = options.some((o) => o.value === value);
@@ -111,7 +120,6 @@ function withSavedValue(value, options) {
   return [{ value, label: `Saved value: ${value}` }, ...options];
 }
 
-/* Read-first helper (supports legacy keys if your onboarding saved elsewhere) */
 function pickFirst(...vals) {
   for (const v of vals) {
     if (v === undefined || v === null) continue;
@@ -122,7 +130,7 @@ function pickFirst(...vals) {
 }
 
 /* ===========================
-   PDF helpers (professional)
+   PDF helpers
 =========================== */
 function formatDateTime(d) {
   try {
@@ -152,8 +160,9 @@ function formatDate(d) {
 
 function guessImgFormat(dataUrl) {
   const s = String(dataUrl || "");
-  if (s.startsWith("data:image/jpeg") || s.startsWith("data:image/jpg"))
+  if (s.startsWith("data:image/jpeg") || s.startsWith("data:image/jpg")) {
     return "JPEG";
+  }
   if (s.startsWith("data:image/webp")) return "WEBP";
   return "PNG";
 }
@@ -183,6 +192,7 @@ function drawLogoKeepRatio(pdf, dataUrl, x, y, maxW, maxH) {
 async function toDataUrl(url) {
   const res = await fetch(url);
   const blob = await res.blob();
+
   return await new Promise((resolve, reject) => {
     const fr = new FileReader();
     fr.onload = () => resolve(fr.result);
@@ -202,9 +212,7 @@ function addHeader(pdf, PAGE, opts) {
   const headerY = PAGE.t - 46;
 
   if (logoDataUrl) {
-    const maxW = 120;
-    const maxH = 28;
-    drawLogoKeepRatio(pdf, logoDataUrl, PAGE.l, headerY + 10, maxW, maxH);
+    drawLogoKeepRatio(pdf, logoDataUrl, PAGE.l, headerY + 10, 120, 28);
   }
 
   pdf.setFont("helvetica", "bold");
@@ -265,16 +273,15 @@ export default function ProfileSettings() {
   const [goal, setGoal] = useState("");
   const [timeline, setTimeline] = useState("");
 
-  // Preferences: in-app reminder only
   const [remindAssessments, setRemindAssessments] = useState(false);
 
-  // Delete account
-  const [deleting, setDeleting] = useState(false);
+  const [requestingDeletion, setRequestingDeletion] = useState(false);
   const [deleteErr, setDeleteErr] = useState("");
 
   useEffect(() => {
     (async () => {
       const u = auth.currentUser;
+
       if (!u) {
         setLoading(false);
         return;
@@ -289,14 +296,12 @@ export default function ProfileSettings() {
         const d = snap.data() || {};
         const p = d.profile || {};
         const s = d.settings || {};
-        const ob = d.onboarding || d.onboardingProfile || {}; // legacy fallback if you ever used it
+        const ob = d.onboarding || d.onboardingProfile || {};
 
         setName(
           pickFirst(d.name, p.name, d.profile?.name, u.email?.split("@")[0], "")
         );
 
-        // IMPORTANT: these pickFirst lines make Profile page resilient
-        // even if onboarding saved under different keys earlier.
         setSector(pickFirst(p.sector, d.sector, ob.sector, ""));
         setSize(
           pickFirst(
@@ -341,10 +346,14 @@ export default function ProfileSettings() {
     })();
   }, []);
 
-  const handleSave = async () => {
+  const clearMessages = () => {
     setErr("");
     setMsg("");
     setDeleteErr("");
+  };
+
+  const handleSave = async () => {
+    clearMessages();
     setSaving(true);
 
     try {
@@ -393,19 +402,19 @@ export default function ProfileSettings() {
   };
 
   const handleResetPassword = async () => {
-    setErr("");
-    setMsg("");
-    setDeleteErr("");
+    clearMessages();
 
     try {
       const u = auth.currentUser;
       const targetEmail = email || u?.email || "";
+
       if (!targetEmail) throw new Error("No email found for this account.");
 
       await sendPasswordResetEmail(auth, targetEmail);
       setMsg(`Password reset email sent to ${targetEmail}.`);
     } catch (e) {
       console.error("Password reset error:", e);
+
       let message = e.message || "Failed to send reset email";
 
       if (e.code === "auth/invalid-email") {
@@ -415,7 +424,7 @@ export default function ProfileSettings() {
           "No user found with this email in Firebase Authentication. Check the email or create the user first.";
       } else if (e.code === "auth/unauthorized-domain") {
         message =
-          "This domain is not authorized in Firebase Authentication. Add localhost (or your domain) to the Authorized domains list.";
+          "This domain is not authorized in Firebase Authentication. Add localhost or your domain to the Authorized domains list.";
       } else if (e.code === "auth/operation-not-allowed") {
         message =
           "Email/password sign-in is disabled in Firebase Authentication. Enable it in the console.";
@@ -425,122 +434,95 @@ export default function ProfileSettings() {
     }
   };
 
-  const handleDeleteAccount = async () => {
-    setErr("");
-    setMsg("");
-    setDeleteErr("");
+  const handleRequestAccountDeletion = async () => {
+    clearMessages();
 
     const u = auth.currentUser;
+
     if (!u) {
       setDeleteErr("Not authenticated.");
       return;
     }
 
     const confirmed = window.confirm(
-      "This will permanently delete your EcoTrack account, including all ESG assessments. This action cannot be undone.\n\nDo you want to continue?"
+      "Are you sure you want to request deletion of your EcoTrack account? If your account has an active subscription or billing records, the request must be reviewed before deletion can be completed."
     );
+
     if (!confirmed) return;
 
-    setDeleting(true);
+    setRequestingDeletion(true);
 
     try {
-      const uid = u.uid;
+      const requestAccountDeletion = httpsCallable(
+        functions,
+        "requestAccountDeletion"
+      );
 
-      // 1) Delete assessments subcollection (batched safely)
-      const assessmentsRef = collection(db, "users", uid, "assessments");
-      const snap = await getDocs(assessmentsRef);
-
-      let batch = writeBatch(db);
-      let ops = 0;
-      const commits = [];
-
-      snap.forEach((docSnap) => {
-        batch.delete(docSnap.ref);
-        ops++;
-
-        // Batch limit is 500; keep buffer
-        if (ops >= 450) {
-          commits.push(batch.commit());
-          batch = writeBatch(db);
-          ops = 0;
-        }
+      const result = await requestAccountDeletion({
+        note: "User requested account deletion from Profile & Settings.",
       });
 
-      if (ops > 0) commits.push(batch.commit());
-      await Promise.all(commits);
-
-      // 2) Delete user document
-      await deleteDoc(doc(db, "users", uid));
-
-      // 3) Delete auth user
-      await deleteUser(u);
-
-      // 4) Redirect
-      window.location.replace("/login");
+      setMsg(
+        result.data?.message ||
+          "Your account deletion request has been received."
+      );
     } catch (e) {
-      console.error("Account delete error:", e);
-      if (e.code === "auth/requires-recent-login") {
-        setDeleteErr(
-          "For security reasons, please log out and log in again, then retry deleting your account."
-        );
-      } else {
-        setDeleteErr("Something went wrong while deleting your account.");
-      }
+      console.error("Account deletion request error:", e);
+      setDeleteErr(
+        "We could not submit your deletion request. Please contact info@viridisconsultancy.com."
+      );
     } finally {
-      setDeleting(false);
+      setRequestingDeletion(false);
     }
   };
 
   const handleDownloadData = async () => {
-    setErr("");
-    setMsg("");
-    setDeleteErr("");
+    clearMessages();
     setExporting(true);
 
     try {
       const u = auth.currentUser;
       if (!u) throw new Error("Not authenticated");
+
       const uid = u.uid;
 
-      // 1) Get user document
       const userRef = doc(db, "users", uid);
       const userSnap = await getDoc(userRef);
       const userData = userSnap.exists() ? userSnap.data() : null;
 
-      // 2) Get all assessments
       const assessmentsRef = collection(db, "users", uid, "assessments");
       const assessmentsSnap = await getDocs(assessmentsRef);
       const assessments = [];
+
       assessmentsSnap.forEach((docSnap) => {
         assessments.push({ id: docSnap.id, ...docSnap.data() });
       });
 
-      // Sort newest first
       assessments.sort((a, b) => {
         const ad = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : 0;
         const bd = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : 0;
         return bd - ad;
       });
 
-      // 3) Load logo
       const logoUrl = new URL(
         "../assets/ecotrack-logo.png",
         import.meta.url
       ).href;
 
       let logoDataUrl = "";
+
       try {
         logoDataUrl = await toDataUrl(logoUrl);
       } catch {
         logoDataUrl = "";
       }
 
-      // 4) Build PDF
       const pdf = new jsPDF({ compress: true, unit: "pt", format: "a4" });
+
       pdf.setProperties({
         title: "EcoTrack — Data Export",
         author: "EcoTrack by Viridis",
-        subject: "User data export (profile + assessments)",
+        subject: "User data export: profile and assessments",
         creator: "EcoTrack by Viridis",
       });
 
@@ -632,7 +614,6 @@ export default function ProfileSettings() {
       });
 
       y = pdf.lastAutoTable.finalY + 20;
-
       y = sectionTitle(pdf, PAGE, "Assessments summary", y);
 
       if (assessments.length === 0) {
@@ -646,17 +627,32 @@ export default function ProfileSettings() {
           const updatedAt = a.updatedAt?.toDate ? a.updatedAt.toDate() : null;
 
           const overallPct =
-            typeof a.overall === "number"
+            typeof a.overallScore === "number"
+              ? `${Math.round(a.overallScore)}%`
+              : typeof a.overall === "number"
               ? `${Math.round(a.overall * 100)}%`
               : "-";
 
-          const ps = a.pillarScores || {};
           const ePct =
-            typeof ps.E === "number" ? `${Math.round(ps.E * 100)}%` : "-";
+            typeof a.envScore === "number"
+              ? `${Math.round(a.envScore)}%`
+              : typeof a.pillarScores?.E === "number"
+              ? `${Math.round(a.pillarScores.E * 100)}%`
+              : "-";
+
           const sPct =
-            typeof ps.S === "number" ? `${Math.round(ps.S * 100)}%` : "-";
+            typeof a.socScore === "number"
+              ? `${Math.round(a.socScore)}%`
+              : typeof a.pillarScores?.S === "number"
+              ? `${Math.round(a.pillarScores.S * 100)}%`
+              : "-";
+
           const gPct =
-            typeof ps.G === "number" ? `${Math.round(ps.G * 100)}%` : "-";
+            typeof a.govScore === "number"
+              ? `${Math.round(a.govScore)}%`
+              : typeof a.pillarScores?.G === "number"
+              ? `${Math.round(a.pillarScores.G * 100)}%`
+              : "-";
 
           return [
             a.id,
@@ -672,7 +668,9 @@ export default function ProfileSettings() {
 
         autoTable(pdf, {
           startY: y + 8,
-          head: [["ID", "Sector", "Created", "Updated", "Overall", "E", "S", "G"]],
+          head: [
+            ["ID", "Sector", "Created", "Updated", "Overall", "E", "S", "G"],
+          ],
           body: summaryRows,
           theme: "striped",
           styles: {
@@ -703,7 +701,6 @@ export default function ProfileSettings() {
         });
       }
 
-      // Detail pages
       assessments.forEach((a, index) => {
         pdf.addPage();
 
@@ -724,29 +721,40 @@ export default function ProfileSettings() {
         pdf.text(`Assessment ${index + 1}`, PAGE.l, y2);
         y2 += 14;
 
-        pdf.setFont("helvetica", "normal");
-        pdf.setFontSize(10);
-        pdf.setTextColor(51, 65, 85);
-
         const overallPct =
-          typeof a.overall === "number"
+          typeof a.overallScore === "number"
+            ? `${Math.round(a.overallScore)}%`
+            : typeof a.overall === "number"
             ? `${Math.round(a.overall * 100)}%`
             : "-";
 
-        const ps = a.pillarScores || {};
         const ePct =
-          typeof ps.E === "number" ? `${Math.round(ps.E * 100)}%` : "-";
+          typeof a.envScore === "number"
+            ? `${Math.round(a.envScore)}%`
+            : typeof a.pillarScores?.E === "number"
+            ? `${Math.round(a.pillarScores.E * 100)}%`
+            : "-";
+
         const sPct =
-          typeof ps.S === "number" ? `${Math.round(ps.S * 100)}%` : "-";
+          typeof a.socScore === "number"
+            ? `${Math.round(a.socScore)}%`
+            : typeof a.pillarScores?.S === "number"
+            ? `${Math.round(a.pillarScores.S * 100)}%`
+            : "-";
+
         const gPct =
-          typeof ps.G === "number" ? `${Math.round(ps.G * 100)}%` : "-";
+          typeof a.govScore === "number"
+            ? `${Math.round(a.govScore)}%`
+            : typeof a.pillarScores?.G === "number"
+            ? `${Math.round(a.pillarScores.G * 100)}%`
+            : "-";
 
         const metaRows = [
           ["Assessment ID", a.id],
           ["Sector", a.sector || "-"],
           ["Created", createdStr],
           ["Overall score", overallPct],
-          ["Pillars (E / S / G)", `${ePct} / ${sPct} / ${gPct}`],
+          ["Pillars E / S / G", `${ePct} / ${sPct} / ${gPct}`],
         ];
 
         autoTable(pdf, {
@@ -807,7 +815,7 @@ export default function ProfileSettings() {
             alternateRowStyles: { fillColor: [248, 250, 252] },
             columnStyles: {
               0: { cellWidth: 120 },
-              1: { cellWidth: PAGE.w - PAGE.l - PAGE.r - 120 - 50 },
+              1: { cellWidth: PAGE.w - PAGE.l - PAGE.r - 170 },
               2: { cellWidth: 50, halign: "center" },
             },
             margin: { left: PAGE.l, right: PAGE.r },
@@ -815,9 +823,9 @@ export default function ProfileSettings() {
         }
       });
 
-      // Footers
       const pageCount = pdf.getNumberOfPages();
-      for (let i = 1; i <= pageCount; i++) {
+
+      for (let i = 1; i <= pageCount; i += 1) {
         pdf.setPage(i);
         addFooter(pdf, PAGE, i, pageCount);
       }
@@ -863,6 +871,8 @@ export default function ProfileSettings() {
               display: "flex",
               justifyContent: "space-between",
               alignItems: "baseline",
+              gap: 16,
+              flexWrap: "wrap",
             }}
           >
             <h1 className="landing__title">Profile &amp; Settings</h1>
@@ -971,7 +981,7 @@ export default function ProfileSettings() {
               </div>
 
               <div style={{ gridColumn: "1 / -1" }}>
-                <label style={lbl}>Sustainability goal (short)</label>
+                <label style={lbl}>Sustainability goal</label>
                 <input
                   type="text"
                   value={goal}
@@ -1021,6 +1031,7 @@ export default function ProfileSettings() {
             <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>
               Security
             </div>
+
             <div
               style={{
                 display: "flex",
@@ -1036,12 +1047,12 @@ export default function ProfileSettings() {
               >
                 Send password reset email
               </button>
+
               <span style={{ fontSize: 12, color: "#64748b" }}>
                 To logout, use the menu in the top-right corner.
               </span>
             </div>
 
-            {/* Danger zone - delete account */}
             <div
               style={{
                 marginTop: 16,
@@ -1059,30 +1070,37 @@ export default function ProfileSettings() {
               >
                 Attention
               </div>
+
               <p
                 style={{
                   fontSize: 12,
                   color: "#64748b",
                   marginBottom: 8,
-                  maxWidth: 480,
+                  maxWidth: 620,
                 }}
               >
-                Deleting your account will permanently remove your profile and
-                all ESG assessments. This action cannot be undone.
+                You can request deletion of your EcoTrack account and related
+                ESG assessment data. If your account has an active subscription,
+                billing records, or legally relevant transaction data, the
+                request must be reviewed before deletion can be completed.
               </p>
+
               <button
                 className="btn btn--ghost"
                 type="button"
-                onClick={handleDeleteAccount}
-                disabled={deleting}
+                onClick={handleRequestAccountDeletion}
+                disabled={requestingDeletion}
                 style={{
                   borderColor: "#b91c1c",
                   color: "#b91c1c",
-                  opacity: deleting ? 0.7 : 1,
+                  opacity: requestingDeletion ? 0.7 : 1,
                 }}
               >
-                {deleting ? "Deleting account…" : "Delete my account"}
+                {requestingDeletion
+                  ? "Submitting request…"
+                  : "Request account deletion"}
               </button>
+
               {deleteErr && (
                 <p style={{ marginTop: 8, fontSize: 12, color: "#b91c1c" }}>
                   {deleteErr}
@@ -1117,6 +1135,7 @@ export default function ProfileSettings() {
                   />
                   <span>Remind me to repeat the ESG assessment periodically</span>
                 </label>
+
                 <p
                   style={{
                     fontSize: 11,
@@ -1126,8 +1145,8 @@ export default function ProfileSettings() {
                   }}
                 >
                   We&apos;ll show a reminder banner inside EcoTrack when it&apos;s
-                  time to repeat your ESG assessment. No emails, and you can
-                  disable this at any time.
+                  time to repeat your ESG assessment. You can disable this at
+                  any time.
                 </p>
               </div>
             </div>
@@ -1138,19 +1157,20 @@ export default function ProfileSettings() {
             <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>
               Data &amp; Privacy
             </div>
+
             <p
               style={{
                 fontSize: 13,
                 color: "#64748b",
                 marginBottom: 12,
-                maxWidth: 600,
+                maxWidth: 720,
               }}
             >
-              You are in control of your data. You can update your profile at any
-              time. If you decide to delete your account, all ESG assessments and
-              related data stored in EcoTrack will be removed permanently using
-              the <strong>Delete my account</strong> option in the Security
-              section. You can also download a copy of your data.
+              You are in control of your data. You can update your profile at
+              any time. You can download a copy of your EcoTrack profile and ESG
+              assessments. Account deletion is handled through a deletion
+              request so that subscription status, billing records, and legal
+              retention requirements can be reviewed correctly.
             </p>
 
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -1162,9 +1182,92 @@ export default function ProfileSettings() {
               >
                 {exporting ? "Preparing download…" : "Download my data"}
               </button>
+
               <span style={{ fontSize: 11, color: "#94a3b8" }}>
-                Downloads a PDF report with your profile and all ESG assessments.
+                Downloads a PDF report with your profile and ESG assessments.
               </span>
+            </div>
+          </Card>
+
+          {/* Legal documents */}
+          <Card>
+            <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>
+              Legal documents
+            </div>
+
+            <p
+              style={{
+                fontSize: 13,
+                color: "#64748b",
+                marginBottom: 12,
+                maxWidth: 720,
+              }}
+            >
+              Review the legal documents that apply to your EcoTrack account,
+              subscription, data processing, business access, and use of the
+              service.
+            </p>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 10,
+              }}
+            >
+              <Link
+                to="/terms-and-conditions"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={legalLink}
+              >
+                Terms and Conditions <span>↗</span>
+              </Link>
+
+              <Link
+                to="/privacy-policy"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={legalLink}
+              >
+                Privacy Policy <span>↗</span>
+              </Link>
+
+              <Link
+                to="/cookie-policy"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={legalLink}
+              >
+                Cookie Policy <span>↗</span>
+              </Link>
+
+              <Link
+                to="/dpa"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={legalLink}
+              >
+                Data Processing Agreement <span>↗</span>
+              </Link>
+
+              <Link
+                to="/refund-policy"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={legalLink}
+              >
+                Refund Policy <span>↗</span>
+              </Link>
+
+              <Link
+                to="/legal-notice"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={legalLink}
+              >
+                Legal Notice <span>↗</span>
+              </Link>
             </div>
           </Card>
         </div>

@@ -1,79 +1,167 @@
-// src/utils/suggestionEngine.js
-import { SUGGESTIONS as SUGGESTIONS_POOL } from "./suggestions";
+import { getMaturityKey, getSuggestionForAnswer } from "./questions";
 
-/* ---------- basics ---------- */
-function safeUpper(v) {
-  return (v == null ? "" : String(v)).toUpperCase();
+/* ---------- helpers ---------- */
+function clampScore(v) {
+  const n = Number(v);
+  if (Number.isNaN(n)) return null;
+  if (n < 0) return 0;
+  if (n > 4) return 4;
+  return n;
 }
-function normalizeText(v) {
-  if (v == null) return "";
-  let s = String(v);
-  try { s = decodeURIComponent(s); } catch {}
-  return s.trim();
+
+function safeString(v) {
+  return v == null ? "" : String(v).trim();
 }
-function sectorKey(v) {
-  return normalizeText(v).toLowerCase();
-}
-function normalizeGoal(v) {
-  return normalizeText(v).toLowerCase();
-}
+
 function normalizePillar(v) {
-  const p = safeUpper(v);
-  return p === "E" || p === "S" || p === "G" ? p : null;
-}
-
-/* ---------- answer scoring ---------- */
-function getAnswerScore(v) {
-  if (v == null) return null;
-
-  if (typeof v === "number" && !Number.isNaN(v)) return v;
-
-  if (typeof v === "object") {
-    if (typeof v.score === "number" && !Number.isNaN(v.score)) return v.score;
-    if (typeof v.value === "number" && !Number.isNaN(v.value)) return v.value;
-    if (typeof v.points === "number" && !Number.isNaN(v.points)) return v.points;
-
-    const label = typeof v.label === "string" ? v.label.trim().toLowerCase() : "";
-    if (label === "na" || label === "n/a" || label === "unknown") return null;
-    if (label === "no") return 0;
-    if (label === "yes") return 3;
-    return null;
-  }
-
-  const s = String(v).trim().toLowerCase();
-  if (s === "na" || s === "n/a" || s === "unknown") return null;
-  if (s === "no") return 0;
-  if (s === "yes") return 3;
-
-  const n = Number(s);
-  if (!Number.isNaN(n)) return n;
-
+  const s = safeString(v).toLowerCase();
+  if (s === "e" || s === "environmental") return "E";
+  if (s === "s" || s === "social") return "S";
+  if (s === "g" || s === "governance") return "G";
   return null;
 }
 
+function scoreToLabel(score) {
+  if (score === 0) return "Not in place";
+  if (score === 1) return "Informal / ad hoc";
+  if (score === 2) return "Partially structured";
+  if (score === 3) return "Implemented & documented";
+  if (score === 4) return "Advanced / best practice";
+  return "Not answered";
+}
+
+function getAnswerScore(value) {
+  if (value == null) return null;
+
+  if (typeof value === "number") {
+    return clampScore(value);
+  }
+
+  if (typeof value === "object") {
+    if (typeof value.score === "number") return clampScore(value.score);
+    if (typeof value.value === "number") return clampScore(value.value);
+    if (typeof value.points === "number") return clampScore(value.points);
+    if (typeof value.answerScore === "number") return clampScore(value.answerScore);
+    if (typeof value.numericScore === "number") return clampScore(value.numericScore);
+
+    const label =
+      value.label ||
+      value.answerLabel ||
+      value.answer ||
+      value.valueLabel ||
+      "";
+
+    const m = getMaturityKey(label);
+    if (m === "notInPlace") return 0;
+    if (m === "informal") return 1;
+    if (m === "partial") return 2;
+    if (m === "implemented") return 3;
+    if (m === "advanced") return 4;
+
+    const raw = safeString(label).toLowerCase();
+    if (raw === "yes") return 4;
+    if (raw === "no") return 0;
+    if (raw === "partial") return 2;
+    if (raw === "unknown" || raw === "n/a" || raw === "na") return 0;
+
+    return null;
+  }
+
+  const s = safeString(value).toLowerCase();
+  if (!s) return null;
+
+  const m = getMaturityKey(value);
+  if (m === "notInPlace") return 0;
+  if (m === "informal") return 1;
+  if (m === "partial") return 2;
+  if (m === "implemented") return 3;
+  if (m === "advanced") return 4;
+
+  if (s === "yes") return 4;
+  if (s === "no") return 0;
+  if (s === "partial") return 2;
+  if (s === "unknown" || s === "n/a" || s === "na") return 0;
+
+  const n = Number(s);
+  return Number.isNaN(n) ? null : clampScore(n);
+}
+
+function getAnswerLabel(value) {
+  if (value == null) return "Not answered";
+
+  if (typeof value === "object") {
+    if (value.label) return String(value.label);
+    if (value.answerLabel) return String(value.answerLabel);
+    if (typeof value.score === "number") return scoreToLabel(clampScore(value.score));
+    if (typeof value.answerScore === "number") return scoreToLabel(clampScore(value.answerScore));
+    if (typeof value.numericScore === "number") return scoreToLabel(clampScore(value.numericScore));
+  }
+
+  if (typeof value === "number") {
+    return scoreToLabel(clampScore(value));
+  }
+
+  const s = safeString(value);
+  if (!s) return "Not answered";
+  return s;
+}
+
+function getMaturityFromAnswer(value) {
+  const label = getAnswerLabel(value);
+  const byLabel = getMaturityKey(label);
+  if (byLabel) return byLabel;
+
+  const score = getAnswerScore(value);
+  if (score == null) return null;
+  if (score === 0) return "notInPlace";
+  if (score === 1) return "informal";
+  if (score === 2) return "partial";
+  if (score === 3) return "implemented";
+  if (score === 4) return "advanced";
+  return null;
+}
+
+function normalizeAnswersInput(questions = [], answers = {}) {
+  if (!answers) return {};
+
+  if (!Array.isArray(answers) && typeof answers === "object") {
+    return answers;
+  }
+
+  if (Array.isArray(answers)) {
+    const out = {};
+    questions.forEach((q, idx) => {
+      out[q.id] = answers[idx];
+    });
+    return out;
+  }
+
+  return {};
+}
+
 function inferPillarAverages({ questions = [], answers = {} }) {
+  const answersMap = normalizeAnswersInput(questions, answers);
+
   const sums = { E: 0, S: 0, G: 0 };
-  const counts = { E: 0, S: 0, G: 0 };
+  const weights = { E: 0, S: 0, G: 0 };
 
   for (const q of questions || []) {
-    const id = q.id || q.qid || q.key;
-    if (!id) continue;
-
-    const p = normalizePillar(q.pillar || q.esg || q.category || "");
+    const p = normalizePillar(q.pillar || q.esg || q.category);
     if (!p) continue;
 
-    const score = getAnswerScore(answers[id]);
+    const score = getAnswerScore(answersMap[q.id]);
     if (typeof score !== "number") continue;
 
-    sums[p] += score;
-    counts[p] += 1;
+    const w = Number.isFinite(q.weight) ? q.weight : 1;
+    sums[p] += score * w;
+    weights[p] += w;
   }
 
-  const out = { E: null, S: null, G: null };
-  for (const p of ["E", "S", "G"]) {
-    out[p] = counts[p] ? sums[p] / counts[p] : null;
-  }
-  return out;
+  return {
+    E: weights.E ? sums.E / weights.E : null,
+    S: weights.S ? sums.S / weights.S : null,
+    G: weights.G ? sums.G / weights.G : null,
+  };
 }
 
 export function inferWorstPillar({ questions = [], answers = {} }) {
@@ -84,126 +172,6 @@ export function inferWorstPillar({ questions = [], answers = {} }) {
   return entries[0][0];
 }
 
-/* ---------- onboarding normalization ---------- */
-function sizeTierFromProfile(sizeRaw) {
-  if (sizeRaw == null || sizeRaw === "") return null;
-
-  if (typeof sizeRaw === "number") {
-    const n = sizeRaw;
-    if (n <= 10) return "micro";
-    if (n <= 50) return "small";
-    if (n <= 250) return "medium";
-    return "large";
-  }
-
-  const s = String(sizeRaw).toLowerCase().trim();
-  if (s.includes("micro")) return "micro";
-  if (s.includes("small")) return "small";
-  if (s.includes("medium")) return "medium";
-  if (s.includes("large")) return "large";
-
-  const nums =
-    s.match(/\d+/g)?.map(Number).filter((x) => !Number.isNaN(x)) || [];
-  if (nums.length) {
-    const max = Math.max(...nums);
-    if (max <= 10) return "micro";
-    if (max <= 50) return "small";
-    if (max <= 250) return "medium";
-    return "large";
-  }
-
-  return null;
-}
-
-function turnoverTierFromProfile(turnoverRaw) {
-  if (turnoverRaw == null || turnoverRaw === "") return null;
-
-  const parseMoney = (x) => {
-    if (typeof x === "number" && !Number.isNaN(x)) return x;
-
-    const s = String(x).toLowerCase().replace(/[, ]/g, "").trim();
-    if (!s) return null;
-
-    const hasM = s.includes("m") || s.includes("million");
-    const hasK = s.includes("k") || s.includes("thousand");
-
-    const nums =
-      s.match(/\d+(\.\d+)?/g)?.map(Number).filter((v) => !Number.isNaN(v)) || [];
-    if (!nums.length) return null;
-
-    const base = Math.max(...nums);
-    if (hasM) return base * 1_000_000;
-    if (hasK) return base * 1_000;
-    return base;
-  };
-
-  const n = parseMoney(turnoverRaw);
-  if (typeof n !== "number" || Number.isNaN(n)) return null;
-
-  if (n <= 2_000_000) return "micro";
-  if (n <= 10_000_000) return "small";
-  if (n <= 50_000_000) return "medium";
-  return "large";
-}
-
-function timelineTierFromProfile(timelineRaw) {
-  if (timelineRaw == null || timelineRaw === "") return null;
-  const s = String(timelineRaw).toLowerCase().trim();
-
-  if (s.includes("0-6") || s.includes("0–6")) return "0-6";
-  if (s.includes("6-12") || s.includes("6–12")) return "6-12";
-  if (s.includes("12+")) return "12+";
-  if (s.includes("12")) return "12+";
-  if (s.includes("quick")) return "0-6";
-
-  const n = Number(s);
-  if (!Number.isNaN(n)) {
-    if (n <= 6) return "0-6";
-    if (n <= 12) return "6-12";
-    return "12+";
-  }
-  return null;
-}
-
-function timeframeTierFromSuggestion(timeframeRaw) {
-  if (!timeframeRaw) return null;
-  const s = String(timeframeRaw).toLowerCase().trim();
-  if (s.includes("0-6") || s.includes("0–6")) return "0-6";
-  if (s.includes("6-12") || s.includes("6–12")) return "6-12";
-  if (s.includes("12+")) return "12+";
-  if (s.includes("12")) return "12+";
-  if (s.includes("quick")) return "0-6";
-  return null;
-}
-
-function parseCsrdInScope(profile) {
-  const raw =
-    profile?.csrdInScope ??
-    profile?.csrdScope ??
-    profile?.csrd ??
-    profile?.csrdStatus ??
-    profile?.csrd_applicability;
-
-  if (typeof raw === "boolean") return raw;
-
-  const s = String(raw ?? "").toLowerCase().trim();
-  if (!s) return null;
-
-  if (s === "yes" || s === "true" || s.includes("in scope") || s.includes("applicable") || s.includes("required"))
-    return true;
-
-  if (s === "no" || s === "false" || s.includes("out of scope") || s.includes("not applicable") || s.includes("not required"))
-    return false;
-
-  return null;
-}
-
-function goalFromProfile(profile) {
-  const g = profile?.goal ?? profile?.goals ?? profile?.primaryGoal;
-  return normalizeGoal(g);
-}
-
-/* ---------- pillar selection ---------- */
 function toPct(v) {
   if (typeof v !== "number" || Number.isNaN(v)) return null;
   if (v >= 0 && v <= 1) return Math.round(v * 100);
@@ -213,11 +181,27 @@ function toPct(v) {
 function normalizePillarPercents(pillarPercents) {
   if (!pillarPercents || typeof pillarPercents !== "object") return null;
 
-  const E = pillarPercents.E ?? pillarPercents.env ?? pillarPercents.environmental ?? null;
-  const S = pillarPercents.S ?? pillarPercents.soc ?? pillarPercents.social ?? null;
-  const G = pillarPercents.G ?? pillarPercents.gov ?? pillarPercents.governance ?? null;
+  const out = {
+    E: toPct(
+      pillarPercents.E ??
+        pillarPercents.env ??
+        pillarPercents.environmental ??
+        null
+    ),
+    S: toPct(
+      pillarPercents.S ??
+        pillarPercents.soc ??
+        pillarPercents.social ??
+        null
+    ),
+    G: toPct(
+      pillarPercents.G ??
+        pillarPercents.gov ??
+        pillarPercents.governance ??
+        null
+    ),
+  };
 
-  const out = { E: toPct(E), S: toPct(S), G: toPct(G) };
   if (out.E == null && out.S == null && out.G == null) return null;
   return out;
 }
@@ -225,190 +209,208 @@ function normalizePillarPercents(pillarPercents) {
 function pillarsBelowThreshold(pillarPercents, threshold) {
   const p = normalizePillarPercents(pillarPercents);
   if (!p) return [];
-  const t = typeof threshold === "number" ? threshold : 50;
 
+  const t = typeof threshold === "number" ? threshold : 50;
   const out = [];
+
   if (p.E != null && p.E < t) out.push("E");
   if (p.S != null && p.S < t) out.push("S");
   if (p.G != null && p.G < t) out.push("G");
+
   return out;
 }
 
 function lowestNPillarsByPercents(pillarPercents, n = 2) {
   const p = normalizePillarPercents(pillarPercents);
   if (!p) return [];
+
   const entries = Object.entries(p).filter(([, v]) => typeof v === "number");
   if (!entries.length) return [];
+
   entries.sort((a, b) => a[1] - b[1]);
-  return entries.slice(0, Math.max(1, n)).map(([k]) => k);
+  return entries.slice(0, Math.max(1, n)).map(([pillar]) => pillar);
 }
 
-function lowestNPillarsByAnswers({ questions, answers, n = 2 }) {
+function lowestNPillarsByAnswers({ questions = [], answers = {}, n = 2 }) {
   const avgs = inferPillarAverages({ questions, answers });
   const entries = Object.entries(avgs).filter(([, v]) => typeof v === "number");
   if (!entries.length) return [];
+
   entries.sort((a, b) => a[1] - b[1]);
-  return entries.slice(0, Math.max(1, n)).map(([k]) => k);
+  return entries.slice(0, Math.max(1, n)).map(([pillar]) => pillar);
 }
 
-/* ---------- sector + onboarding constraints ---------- */
-function matchesSector(s, sector) {
-  const sec = sectorKey(sector);
-  const sectors = (s.sectors || ["*"]).map(sectorKey);
-  if (!sec) return true;
-  return sectors.includes(sec) || sectors.includes("*") || sectors.includes("all");
+function cleanQuestionTitle(questionText = "") {
+  return String(questionText)
+    .replace(/\?+$/, "")
+    .replace(/^do you\s+/i, "")
+    .replace(/^have you\s+/i, "")
+    .replace(/^how do you\s+/i, "")
+    .replace(/^is there\s+/i, "")
+    .replace(/^are you\s+/i, "")
+    .replace(/^are your\s+/i, "")
+    .replace(/^do your\s+/i, "")
+    .replace(/^can you\s+/i, "")
+    .trim();
 }
 
-function matchesOnboardingHard(s, profile) {
-  // Only true hard rule: CSRD-only requires CSRD clearly true
-  const csrd = parseCsrdInScope(profile);
-  if (s.csrdOnly && csrd !== true) return false;
-
-  // Size: hard filter only if suggestion declares sizes AND profile size is known
-  const sizeTier = sizeTierFromProfile(profile?.size);
-  if (Array.isArray(s.sizes) && s.sizes.length && sizeTier) {
-    const allowed = s.sizes.map((x) => String(x).toLowerCase().trim());
-    if (!allowed.includes(sizeTier)) return false;
-  }
-
-  return true;
+function capitalizeFirst(text = "") {
+  if (!text) return "";
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/* ---------- scoring ---------- */
-function scoreSuggestion(s, sector, profile, selectedPillars, worstPillar) {
-  let score = 0;
-
-  const sec = sectorKey(sector);
-  const sectors = (s.sectors || ["*"]).map(sectorKey);
-
-  // sector
-  if (sectors.includes("*") || sectors.includes("all")) score += 2;
-  if (sec && sectors.includes(sec)) score += 8;
-
-  // selected pillars (primary)
-  const sp = normalizePillar(s.pillar);
-  if (sp && selectedPillars.includes(sp)) score += 8;
-
-  // tie-break: weakest by answers
-  if (worstPillar && sp === worstPillar) score += 2;
-
-  // size soft boost
-  const sizeTier = sizeTierFromProfile(profile?.size);
-  if (sizeTier && Array.isArray(s.sizes) && s.sizes.map((x) => String(x).toLowerCase().trim()).includes(sizeTier)) {
-    score += 2;
-  }
-
-  // turnover soft boost
-  const turnTier = turnoverTierFromProfile(profile?.turnover);
-  if (turnTier && Array.isArray(s.turnoverTiers) && s.turnoverTiers.map((x) => String(x).toLowerCase().trim()).includes(turnTier)) {
-    score += 1;
-  }
-
-  // goal soft boost (DO NOT FILTER)
-  const g = goalFromProfile(profile);
-  if (g && Array.isArray(s.goals) && s.goals.length) {
-    const allowed = s.goals.map((x) => String(x).toLowerCase().trim());
-    const ok = allowed.some((a) => g.includes(a) || a.includes(g));
-    if (ok) score += 2;
-  }
-
-  // timeline soft boost
-  const tl = timelineTierFromProfile(profile?.timeline);
-  const stl = timeframeTierFromSuggestion(s.timeframe);
-  if (tl && stl && tl === stl) score += 2;
-
-  // impact/effort
-  const impact = (s.impact || "").toLowerCase();
-  const effort = (s.effort || "").toLowerCase();
-  if (impact.includes("high")) score += 2;
-  if (effort.includes("low")) score += 1;
-
-  // Furniture tags boost
-  if (sectorKey(sector) === "furniture") {
-    const tags = (s.tags || []).map((t) => String(t).toLowerCase());
-    if (tags.includes("fsc") || tags.includes("pefc") || tags.includes("wood") || tags.includes("traceability")) {
-      score += 2;
-    }
-  }
-
-  return score;
+function titlePrefixForMaturity(maturity) {
+  if (maturity === "notInPlace") return "Start building";
+  if (maturity === "informal") return "Formalize";
+  if (maturity === "partial") return "Strengthen";
+  if (maturity === "implemented") return "Optimize";
+  return "Improve";
 }
 
-function interleaveByPillar(ranked, pillars) {
-  const wanted = (pillars || []).map(normalizePillar).filter(Boolean);
-  if (wanted.length <= 1) return ranked;
+function impactForQuestion(q) {
+  if (q?.critical) return "High";
+  if ((q?.weight || 1) >= 3) return "High";
+  return "Medium";
+}
 
-  const buckets = { E: [], S: [], G: [] };
-  for (const s of ranked) {
-    const p = normalizePillar(s.pillar);
-    if (p && buckets[p]) buckets[p].push(s);
-  }
+function effortForMaturity(maturity) {
+  if (maturity === "notInPlace") return "Medium";
+  if (maturity === "informal") return "Medium";
+  if (maturity === "partial") return "Medium";
+  if (maturity === "implemented") return "High";
+  return "Medium";
+}
 
-  const out = [];
-  let added = true;
-  while (added) {
-    added = false;
-    for (const p of wanted) {
-      if (buckets[p]?.length) {
-        out.push(buckets[p].shift());
-        added = true;
-      }
-    }
-  }
-  return out.concat(buckets.E, buckets.S, buckets.G);
+function timeframeForMaturity(maturity) {
+  if (maturity === "notInPlace") return "0–6 months";
+  if (maturity === "informal") return "0–6 months";
+  if (maturity === "partial") return "6–12 months";
+  if (maturity === "implemented") return "12+ months";
+  return "6–12 months";
+}
+
+function priorityForMaturity(maturity) {
+  if (maturity === "notInPlace") return 100;
+  if (maturity === "informal") return 80;
+  if (maturity === "partial") return 60;
+  if (maturity === "implemented") return 40;
+  return -999;
+}
+
+function maturitySortOrder(maturity) {
+  if (maturity === "notInPlace") return 1;
+  if (maturity === "informal") return 2;
+  if (maturity === "partial") return 3;
+  if (maturity === "implemented") return 4;
+  if (maturity === "advanced") return 5;
+  return 99;
+}
+
+function buildQuestionSuggestion({
+  question,
+  rawAnswer,
+  selectedPillars = [],
+  worstPillar = null,
+}) {
+  if (!question?.id) return null;
+
+  const maturity = getMaturityFromAnswer(rawAnswer);
+  if (!maturity || maturity === "advanced") return null;
+
+  const suggestionText =
+    question?.guidance?.[maturity] || getSuggestionForAnswer(question, rawAnswer);
+
+  if (!suggestionText) return null;
+
+  const pillar = normalizePillar(question.pillar || question.category || question.esg);
+  const titleBase = cleanQuestionTitle(question.question || question.text || "");
+  const title = `${titlePrefixForMaturity(maturity)}: ${capitalizeFirst(titleBase)}`;
+
+  let rank = priorityForMaturity(maturity);
+
+  if (pillar && selectedPillars.includes(pillar)) rank += 25;
+  if (pillar && worstPillar && pillar === worstPillar) rank += 10;
+  if (question.critical) rank += 8;
+  if (Number.isFinite(question.weight)) rank += question.weight * 4;
+
+  return {
+    id: `${question.id}-${maturity}`,
+    source: "question",
+    questionId: question.id,
+    questionText: question.question || question.text || "",
+    answerLabel: getAnswerLabel(rawAnswer),
+    pillar,
+    title,
+    text: suggestionText,
+    tags: Array.isArray(question.tags) ? question.tags : [],
+    impact: impactForQuestion(question),
+    effort: effortForMaturity(maturity),
+    timeframe: timeframeForMaturity(maturity),
+    _rank: rank,
+    _maturityOrder: maturitySortOrder(maturity),
+  };
 }
 
 /**
- * Main export
- *
- * New behavior:
- * - If any pillar < threshold => select those pillars
- * - Else => select lowest N pillars by % (default N=2)
- * - If no pillar % available => select lowest N pillars by answers
+ * Question-based tailored suggestions.
  */
 export function getTailoredSuggestions({
   sector,
-  questions,
-  answers,
+  questions = [],
+  answers = {},
   profile = {},
   limit = 20,
   pillarPercents = null,
   pillarThreshold = 50,
   fallbackLowestNPillars = 2,
 }) {
-  // candidates: sector + hard onboarding
-  const sectorCandidates = SUGGESTIONS_POOL.filter((s) => matchesSector(s, sector));
-  const metaCandidates = sectorCandidates.filter((s) => matchesOnboardingHard(s, profile));
+  const normalizedQuestions = Array.isArray(questions) ? questions : [];
+  if (!normalizedQuestions.length) return [];
 
-  // select pillars
-  let selected = pillarsBelowThreshold(pillarPercents, pillarThreshold);
-  if (!selected.length) selected = lowestNPillarsByPercents(pillarPercents, fallbackLowestNPillars);
-  if (!selected.length) selected = lowestNPillarsByAnswers({ questions, answers, n: fallbackLowestNPillars });
+  const answersMap = normalizeAnswersInput(normalizedQuestions, answers);
 
-  // filter to selected pillars (if we have selection)
-  let pillarCandidates = metaCandidates;
-  if (selected.length) {
-    const filtered = metaCandidates.filter((s) => {
-      const p = normalizePillar(s.pillar);
-      return p && selected.includes(p);
-    });
-    pillarCandidates = filtered.length ? filtered : metaCandidates;
+  let selectedPillars = pillarsBelowThreshold(pillarPercents, pillarThreshold);
+
+  if (!selectedPillars.length) {
+    selectedPillars = lowestNPillarsByPercents(
+      pillarPercents,
+      fallbackLowestNPillars
+    );
   }
 
-  // tie-break pillar from answers (optional)
-  const worstByAnswers = inferWorstPillar({ questions, answers });
+  if (!selectedPillars.length) {
+    selectedPillars = lowestNPillarsByAnswers({
+      questions: normalizedQuestions,
+      answers: answersMap,
+      n: fallbackLowestNPillars,
+    });
+  }
 
-  // rank
-  const ranked = pillarCandidates
-    .map((s) => ({
-      ...s,
-      _score: scoreSuggestion(s, sector, profile, selected, worstByAnswers),
-    }))
-    .sort((a, b) => b._score - a._score);
+  const worstPillar = inferWorstPillar({
+    questions: normalizedQuestions,
+    answers: answersMap,
+  });
 
-  const finalRanked = selected.length > 1 ? interleaveByPillar(ranked, selected) : ranked;
+  const ranked = normalizedQuestions
+    .map((question) =>
+      buildQuestionSuggestion({
+        question,
+        rawAnswer: answersMap[question.id],
+        selectedPillars,
+        worstPillar,
+      })
+    )
+    .filter(Boolean)
+    .sort((a, b) => {
+      if (b._rank !== a._rank) return b._rank - a._rank;
+      if (a._maturityOrder !== b._maturityOrder) {
+        return a._maturityOrder - b._maturityOrder;
+      }
+      return String(a.title).localeCompare(String(b.title));
+    });
 
-  return finalRanked.slice(0, Math.max(1, limit)).map(({ _score, ...rest }) => rest);
+  return ranked
+    .slice(0, Math.max(1, limit))
+    .map(({ _rank, _maturityOrder, ...rest }) => rest);
 }
-
 

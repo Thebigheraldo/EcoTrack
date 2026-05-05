@@ -1,250 +1,309 @@
-/* eslint-disable */
-
-const functions = require("firebase-functions");
+// functions/index.js
 const admin = require("firebase-admin");
-const nodemailer = require("nodemailer");
+const Stripe = require("stripe");
+const { onRequest, onCall, HttpsError } = require("firebase-functions/v2/https");
+const { defineSecret, defineString } = require("firebase-functions/params");
 
-if (!admin.apps.length) {
-  admin.initializeApp();
-}
+admin.initializeApp();
 
 const db = admin.firestore();
 
-/**
- * Nodemailer transport using Gmail.
- *
- * Set credentials once with:
- *   firebase functions:config:set mail.user="yourgmail@gmail.com" mail.pass="your-app-password"
- */
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: functions.config().mail.user,
-    pass: functions.config().mail.pass,
-  },
-});
+const STRIPE_SECRET_KEY = defineSecret("STRIPE_SECRET_KEY");
+const STRIPE_WEBHOOK_SECRET = defineSecret("STRIPE_WEBHOOK_SECRET");
 
-function sendMail({ to, subject, text, html }) {
-  const from = `"EcoTrack by Viridis" <${functions.config().mail.user}>`;
+const ECOTRACK_PRICE_ID = defineString("ECOTRACK_PRICE_ID");
+const APP_BASE_URL = defineString("APP_BASE_URL");
 
-  return transporter.sendMail({
-    from,
-    to,
-    subject,
-    text,
-    html,
+const ACTIVE_STATUSES = ["active", "trialing"];
+
+function getStripe() {
+  return new Stripe(STRIPE_SECRET_KEY.value());
+}
+
+function toTimestampFromUnix(seconds) {
+  if (!seconds) return null;
+  return admin.firestore.Timestamp.fromMillis(seconds * 1000);
+}
+
+async function markEventProcessed(eventId) {
+  const eventRef = db.collection("stripeEvents").doc(eventId);
+
+  const result = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(eventRef);
+
+    if (snap.exists) {
+      return false;
+    }
+
+    tx.set(eventRef, {
+      processedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return true;
+  });
+
+  return result;
+}
+
+async function updateUserSubscription(uid, data) {
+  if (!uid) {
+    console.warn("[stripeWebhook] Missing Firebase UID.");
+    return;
+  }
+
+  await db.collection("users").doc(uid).set(
+    {
+      subscriptionProvider: "stripe",
+      subscriptionStatus: data.subscriptionStatus || "unknown",
+      subscriptionPlan: "annual_99",
+      stripeCustomerId: data.stripeCustomerId || null,
+      stripeSubscriptionId: data.stripeSubscriptionId || null,
+      subscriptionCurrentPeriodEnd: data.subscriptionCurrentPeriodEnd || null,
+      subscriptionCancelAtPeriodEnd:
+        data.subscriptionCancelAtPeriodEnd === true,
+      subscriptionAccessActive: ACTIVE_STATUSES.includes(
+        data.subscriptionStatus,
+      ),
+      subscriptionUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+}
+
+async function findUserByStripeSubscription(subscription) {
+  if (!subscription) return null;
+
+  const subscriptionId = subscription.id;
+  const customerId =
+    typeof subscription.customer === "string" ?
+      subscription.customer :
+      subscription.customer?.id;
+
+  if (subscriptionId) {
+    const bySub = await db
+      .collection("users")
+      .where("stripeSubscriptionId", "==", subscriptionId)
+      .limit(1)
+      .get();
+
+    if (!bySub.empty) {
+      return bySub.docs[0].id;
+    }
+  }
+
+  if (customerId) {
+    const byCustomer = await db
+      .collection("users")
+      .where("stripeCustomerId", "==", customerId)
+      .limit(1)
+      .get();
+
+    if (!byCustomer.empty) {
+      return byCustomer.docs[0].id;
+    }
+  }
+
+  return null;
+}
+
+async function syncSubscription(subscription, fallbackUid = null) {
+  const uid = fallbackUid || (await findUserByStripeSubscription(subscription));
+
+  if (!uid) {
+    console.warn(
+      "[stripeWebhook] Could not find user for subscription:",
+      subscription?.id,
+    );
+    return;
+  }
+
+  const customerId =
+    typeof subscription.customer === "string" ?
+      subscription.customer :
+      subscription.customer?.id;
+
+  await updateUserSubscription(uid, {
+    subscriptionStatus: subscription.status,
+    stripeCustomerId: customerId || null,
+    stripeSubscriptionId: subscription.id,
+    subscriptionCurrentPeriodEnd: toTimestampFromUnix(
+      subscription.current_period_end,
+    ),
+    subscriptionCancelAtPeriodEnd: subscription.cancel_at_period_end === true,
   });
 }
 
-/**
- * 1) Callable: sendCriticalAlertEmail
- * Called from the questionnaire when a critical ESG condition is detected.
- */
-exports.sendCriticalAlertEmail = functions
-  .region("europe-west1")
-  .https.onCall(async (data) => {
-    const {
-      user,
-      profile,
-      scores,
-      threshold = 0.2,
-      source = "unknown",
-      assessmentId,
-    } = data || {};
+exports.createEcoTrackCheckoutSession = onCall(
+  {
+    region: "europe-west1",
+    secrets: [STRIPE_SECRET_KEY],
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+    const email = request.auth?.token?.email;
 
-    if (!scores || ["E", "S", "G"].some((k) => typeof scores[k] !== "number")) {
-      throw new functions.https.HttpsError(
-        "invalid-argument",
-        "Missing or invalid scores"
+    if (!uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "You must be logged in to start checkout.",
       );
     }
 
-    // Log lead in Firestore (server-only)
-    const leadRef = db.collection("leads").doc();
-    await leadRef.set({
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      type: "critical-esg-gate",
-      user: {
-        uid: user && user.uid ? user.uid : null,
-        email: user && user.email ? user.email : null,
-        displayName: user && user.displayName ? user.displayName : null,
-      },
-      profile: profile || null,
-      scores: {
-        E: scores.E,
-        S: scores.S,
-        G: scores.G,
-        overall: scores.overall != null ? scores.overall : null,
-      },
-      threshold,
-      source,
-      assessmentId: assessmentId || null,
-      status: "new",
-    });
+    const stripe = getStripe();
 
-    const pct = (x) => `${Math.round((x || 0) * 100)}%`;
+    const userRef = db.collection("users").doc(uid);
+    const userSnap = await userRef.get();
+    const userData = userSnap.exists ? userSnap.data() : {};
 
-    const html = `
-      <h2>Critical ESG Alert (Questionnaire)</h2>
-      <p><strong>User:</strong> ${(user && user.displayName) || "-"} (${(user && user.email) || "-"})</p>
-      <p><strong>UID:</strong> ${(user && user.uid) || "-"}</p>
-      <p><strong>Assessment ID:</strong> ${assessmentId || "-"}</p>
-      <p><strong>Profile:</strong> ${profile ? JSON.stringify(profile) : "-"}</p>
-      <p><strong>Scores:</strong> E: ${pct(scores.E)} | S: ${pct(scores.S)} | G: ${pct(scores.G)} | Overall: ${
-      scores.overall != null ? pct(scores.overall) : "N/A"
-    }</p>
-      <p><strong>Threshold:</strong> ${Math.round(threshold * 100)}%</p>
-      <p><strong>Source:</strong> ${source}</p>
-    `;
+    let customerId = userData.stripeCustomerId;
 
-    const text = `
-Critical ESG Alert (Questionnaire)
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        email: email || undefined,
+        metadata: {
+          firebaseUid: uid,
+          product: "ecotrack",
+        },
+      });
 
-User: ${(user && user.displayName) || "-"} (${(user && user.email) || "-"})
-UID: ${(user && user.uid) || "-"}
-Assessment ID: ${assessmentId || "-"}
-Profile: ${profile ? JSON.stringify(profile) : "-"}
+      customerId = customer.id;
 
-Scores:
-  E: ${pct(scores.E)}
-  S: ${pct(scores.S)}
-  G: ${pct(scores.G)}
-  Overall: ${scores.overall != null ? pct(scores.overall) : "N/A"}
-
-Threshold: ${Math.round(threshold * 100)}%
-Source: ${source}
-    `.trim();
-
-    await sendMail({
-      to: "info@viridisconsultancy.com",
-      subject: `Critical ESG Gate — ${(user && user.email) || "Unknown user"} (${
-        scores.overall != null ? pct(scores.overall) : "N/A"
-      })`,
-      text,
-      html,
-    });
-
-    return { ok: true, leadId: leadRef.id };
-  });
-
-/**
- * 2) Scheduled: sendAssessmentReminders
- * Runs every day at 09:00 Europe/Rome and emails users who:
- *   - have settings.remindAssessments === true
- *   - AND have no assessment in the last 6 months
- */
-exports.sendAssessmentReminders = functions
-  .region("europe-west1")
-  .pubsub.schedule("every day 09:00")
-  .timeZone("Europe/Rome")
-  .onRun(async () => {
-    const now = new Date();
-
-    const snap = await db
-      .collection("users")
-      .where("settings.remindAssessments", "==", true)
-      .get();
-
-    if (snap.empty) {
-      console.log("[sendAssessmentReminders] no opted-in users.");
-      return null;
+      await userRef.set(
+        {
+          stripeCustomerId: customerId,
+          stripeCustomerCreatedAt:
+            admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
     }
 
-    var sentCount = 0;
-    var SIX_MONTHS = 6;
+    const baseUrl = APP_BASE_URL.value().replace(/\/$/, "");
 
-    for (var i = 0; i < snap.docs.length; i += 1) {
-      var docSnap = snap.docs[i];
-      var u = docSnap.data();
+    const session = await stripe.checkout.sessions.create({
+      mode: "subscription",
+      customer: customerId,
+      client_reference_id: uid,
+      line_items: [
+        {
+          price: ECOTRACK_PRICE_ID.value(),
+          quantity: 1,
+        },
+      ],
+      success_url: `${baseUrl}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${baseUrl}/payment-cancelled`,
+      metadata: {
+        firebaseUid: uid,
+        product: "ecotrack",
+        plan: "annual_99",
+      },
+      subscription_data: {
+        metadata: {
+          firebaseUid: uid,
+          product: "ecotrack",
+          plan: "annual_99",
+        },
+      },
+      allow_promotion_codes: false,
+      billing_address_collection: "auto",
+    });
 
-      var email = u.email;
-      if (!email) {
-        continue;
-      }
+    return {
+      url: session.url,
+    };
+  },
+);
 
-      var lastTs = u.lastAssessmentAt;
-      var lastDate =
-        lastTs && typeof lastTs.toDate === "function"
-          ? lastTs.toDate()
-          : null;
-
-      var monthsDiff = null;
-      if (lastDate) {
-        monthsDiff =
-          (now.getFullYear() - lastDate.getFullYear()) * 12 +
-          (now.getMonth() - lastDate.getMonth());
-      }
-
-      // If last assessment is < 6 months, skip
-      if (lastDate && monthsDiff < SIX_MONTHS) {
-        continue;
-      }
-
-      var name = u.name || "";
-      var sector = (u.profile && u.profile.sector) || "your company";
-      var lastStr = lastDate
-        ? lastDate.toLocaleDateString("en-GB")
-        : "no completed assessment yet";
-
-      var subject = "EcoTrack reminder: time to review your ESG score";
-
-      var text = `
-Hi ${name},
-
-you enabled reminders to review your ESG performance with EcoTrack.
-
-We noticed that your last ESG assessment was: ${lastStr}.
-We recommend running a new ESG self-assessment for ${sector} to keep your ESG strategy up to date.
-
-You can log in and start a new assessment from your dashboard.
-
-If you no longer wish to receive these reminders, disable them in Profile & Settings.
-
-EcoTrack by Viridis
-      `.trim();
-
-      var html = `
-        <p>Hi ${name},</p>
-        <p>You enabled reminders to review your ESG performance with <b>EcoTrack</b>.</p>
-        <p>
-          We noticed that your last ESG assessment was:
-          <b>${lastStr}</b>.<br/>
-          We recommend running a new ESG self-assessment for <b>${sector}</b> to keep your ESG strategy up to date.
-        </p>
-        <p>You can log in and start a new assessment from your dashboard.</p>
-        <p style="font-size:12px;color:#6b7280;">
-          If you no longer wish to receive these reminders, disable them in <b>Profile &amp; Settings</b>.
-        </p>
-        <p>EcoTrack by Viridis</p>
-      `;
-
-      try {
-        await sendMail({ to: email, subject, text, html });
-        sentCount += 1;
-        console.log(
-          "[sendAssessmentReminders] sent reminder to " +
-            email +
-            " (uid=" +
-            docSnap.id +
-            ")"
-        );
-      } catch (err) {
-        console.error(
-          "[sendAssessmentReminders] failed to send to " + email + ":",
-          err
-        );
-      }
+exports.stripeWebhook = onRequest(
+  {
+    region: "europe-west1",
+    secrets: [STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET],
+  },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).send("Method not allowed");
+      return;
     }
 
-    console.log(
-      "[sendAssessmentReminders] finished. Sent " +
-        sentCount +
-        " reminder(s)."
-    );
+    const stripe = getStripe();
+    const signature = req.headers["stripe-signature"];
 
-    return null;
-  });
+    let event;
 
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.rawBody,
+        signature,
+        STRIPE_WEBHOOK_SECRET.value(),
+      );
+    } catch (error) {
+      console.error("[stripeWebhook] Invalid signature:", error.message);
+      res.status(400).send(`Webhook Error: ${error.message}`);
+      return;
+    }
 
+    try {
+      const shouldProcess = await markEventProcessed(event.id);
 
+      if (!shouldProcess) {
+        res.status(200).send("Duplicate event ignored");
+        return;
+      }
 
+      switch (event.type) {
+        case "checkout.session.completed": {
+          const session = event.data.object;
+
+          const uid =
+            session.client_reference_id || session.metadata?.firebaseUid;
+
+          if (!session.subscription) {
+            console.warn(
+              "[stripeWebhook] checkout.session.completed without subscription",
+            );
+            break;
+          }
+
+          const subscription = await stripe.subscriptions.retrieve(
+            session.subscription,
+          );
+
+          await syncSubscription(subscription, uid);
+          break;
+        }
+
+        case "customer.subscription.created":
+        case "customer.subscription.updated":
+        case "customer.subscription.deleted": {
+          const subscription = event.data.object;
+          await syncSubscription(subscription);
+          break;
+        }
+
+        case "invoice.paid":
+        case "invoice.payment_failed": {
+          const invoice = event.data.object;
+
+          if (!invoice.subscription) {
+            break;
+          }
+
+          const subscription = await stripe.subscriptions.retrieve(
+            invoice.subscription,
+          );
+
+          await syncSubscription(subscription);
+          break;
+        }
+
+        default:
+          console.log("[stripeWebhook] Unhandled event:", event.type);
+      }
+
+      res.status(200).send("ok");
+    } catch (error) {
+      console.error("[stripeWebhook] Handler error:", error);
+      res.status(500).send("Webhook handler failed");
+    }
+  },
+);

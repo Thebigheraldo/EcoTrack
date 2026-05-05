@@ -3,6 +3,15 @@ import React from "react";
 import { useNavigate, Link } from "react-router-dom";
 import "../components/landing.css";
 
+const LEGAL_LINKS = [
+  { to: "/terms-and-conditions", label: "Terms of Use" },
+  { to: "/privacy-policy", label: "Privacy Policy" },
+  { to: "/refund-policy", label: "Refund Policy" },
+  { to: "/cookie-policy", label: "Cookie Policy" },
+  { to: "/dpa", label: "DPA" },
+  { to: "/legal-notice", label: "Legal Notice" },
+];
+
 export default function EcoTrackLanding() {
   const navigate = useNavigate();
 
@@ -34,7 +43,11 @@ export default function EcoTrackLanding() {
             </p>
 
             <div className="eco-hero-cta-row">
-              <button onClick={handleStartClick} className="eco-btn-primary" type="button">
+              <button
+                onClick={handleStartClick}
+                className="eco-btn-primary"
+                type="button"
+              >
                 Start EcoTrack
               </button>
 
@@ -56,6 +69,7 @@ export default function EcoTrackLanding() {
                 <span className="eco-mini-label">Demo — Manufacturing SME</span>
                 <span className="eco-mini-score">62%</span>
               </div>
+
               <p className="eco-mini-maturity">Maturity: Developing</p>
 
               <div className="eco-mini-bars">
@@ -69,6 +83,7 @@ export default function EcoTrackLanding() {
                   </div>
                   <span className="eco-mini-bar-value">68</span>
                 </div>
+
                 <div className="eco-mini-bar-row">
                   <span>S · Social</span>
                   <div className="eco-mini-bar-track">
@@ -79,6 +94,7 @@ export default function EcoTrackLanding() {
                   </div>
                   <span className="eco-mini-bar-value">58</span>
                 </div>
+
                 <div className="eco-mini-bar-row">
                   <span>G · Governance</span>
                   <div className="eco-mini-bar-track">
@@ -106,6 +122,7 @@ export default function EcoTrackLanding() {
         {/* FEATURE GRID */}
         <section className="eco-section eco-fade-in">
           <h2 className="eco-section-title">What you get with EcoTrack</h2>
+
           <p className="eco-section-subtitle">
             Not another generic checklist. EcoTrack is structured around real
             ESG pillars, tailored by sector and company profile.
@@ -204,6 +221,7 @@ export default function EcoTrackLanding() {
         {/* WHO IT'S FOR */}
         <section className="eco-section eco-fade-in">
           <h2 className="eco-section-title">Who is EcoTrack for?</h2>
+
           <div className="eco-two-column">
             <ul className="eco-list">
               <li>SMEs that need a first ESG diagnosis before a full audit.</li>
@@ -216,6 +234,7 @@ export default function EcoTrackLanding() {
                 conversation starter with management.
               </li>
             </ul>
+
             <ul className="eco-list">
               <li>
                 Businesses that want to track improvement by running the
@@ -268,12 +287,75 @@ export default function EcoTrackLanding() {
               today — and what to improve next.
             </p>
           </div>
-          <button onClick={handleStartClick} className="eco-btn-primary" type="button">
+
+          <button
+            onClick={handleStartClick}
+            className="eco-btn-primary"
+            type="button"
+          >
             Start EcoTrack
           </button>
         </section>
+
+        <EcoTrackLegalFooter />
       </main>
     </div>
+  );
+}
+
+function EcoTrackLegalFooter() {
+  return (
+    <footer
+      style={{
+        marginTop: "3rem",
+        paddingTop: "1.5rem",
+        paddingBottom: "1rem",
+        borderTop: "1px solid #e5e7eb",
+        textAlign: "center",
+        fontSize: "0.85rem",
+        color: "#64748b",
+      }}
+    >
+      <div
+        style={{
+          marginBottom: 8,
+          fontSize: 12,
+          color: "#64748b",
+        }}
+      >
+        Legal documents
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          gap: "0.85rem",
+          justifyContent: "center",
+          alignItems: "center",
+          flexWrap: "wrap",
+          lineHeight: 1.8,
+        }}
+      >
+        {LEGAL_LINKS.map((item, index) => (
+          <React.Fragment key={item.to}>
+            <Link
+              to={item.to}
+              style={{
+                color: "#148A58",
+                textDecoration: "none",
+                fontWeight: 500,
+              }}
+            >
+              {item.label}
+            </Link>
+
+            {index < LEGAL_LINKS.length - 1 && (
+              <span style={{ color: "#CBD5E1" }}>•</span>
+            )}
+          </React.Fragment>
+        ))}
+      </div>
+    </footer>
   );
 }
 

@@ -4,6 +4,7 @@ import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { onAuthStateChanged } from "firebase/auth";
 import { auth } from "../firebase";
 import useUserDoc from "../hooks/useUserDoc";
+import { hasActiveEcoTrackSubscription } from "../utils/stripePayments";
 
 function Loader() {
   return (
@@ -21,7 +22,6 @@ function Loader() {
   );
 }
 
-/** Stable auth hook (prevents redirect flicker when auth.currentUser is momentarily null). */
 function useAuthStateSafe() {
   const [user, setUser] = useState(auth.currentUser);
   const [loading, setLoading] = useState(true);
@@ -37,11 +37,6 @@ function useAuthStateSafe() {
   return { user, loading };
 }
 
-/**
- * RequireAuth
- * - Waits for auth init.
- * - If not logged in, redirects to /login and preserves intended location.
- */
 export function RequireAuth() {
   const location = useLocation();
   const { user, loading } = useAuthStateSafe();
@@ -51,11 +46,6 @@ export function RequireAuth() {
   return <Outlet />;
 }
 
-/**
- * RedirectIfOnboarded
- * - If onboarding already completed, send the user to /dashboard.
- * - Otherwise, allow access (e.g., the onboarding flow).
- */
 export function RedirectIfOnboarded() {
   const { user, loading: authLoading } = useAuthStateSafe();
   const { userDoc, loading } = useUserDoc();
@@ -66,14 +56,10 @@ export function RedirectIfOnboarded() {
   if (userDoc?.onboardingCompleted) {
     return <Navigate to="/dashboard" replace />;
   }
+
   return <Outlet />;
 }
 
-/**
- * RequireOnboardingCompleted
- * - If onboarding is NOT completed, send the user to /onboarding.
- * - Otherwise, allow access to the requested route.
- */
 export function RequireOnboardingCompleted() {
   const { user, loading: authLoading } = useAuthStateSafe();
   const { userDoc, loading } = useUserDoc();
@@ -84,31 +70,90 @@ export function RequireOnboardingCompleted() {
   if (!userDoc?.onboardingCompleted) {
     return <Navigate to="/onboarding" replace />;
   }
+
   return <Outlet />;
 }
 
-/**
- * RequireSubscription
- * - User must have subscriptionStatus === "active" in user doc.
- * - Otherwise, redirect to /pricing.
- */
 export function RequireSubscription() {
   const location = useLocation();
   const { user, loading: authLoading } = useAuthStateSafe();
-  const { userDoc, loading } = useUserDoc();
+  const { userDoc, loading: userDocLoading } = useUserDoc();
 
-  if (authLoading || loading) return <Loader />;
+  const [subscriptionLoading, setSubscriptionLoading] = useState(true);
+  const [hasAccess, setHasAccess] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function checkSubscription() {
+      if (!user) {
+        setSubscriptionLoading(false);
+        return;
+      }
+
+      try {
+        // First accept the saved Firestore subscription status.
+        if (
+          userDoc?.subscriptionStatus === "active" ||
+          userDoc?.subscriptionStatus === "trialing"
+        ) {
+          if (!cancelled) {
+            setHasAccess(true);
+            setSubscriptionLoading(false);
+          }
+          return;
+        }
+
+        // Then check Stripe directly, with retry.
+        for (let i = 0; i < 5; i++) {
+          const active = await hasActiveEcoTrackSubscription();
+
+          if (cancelled) return;
+
+          if (active) {
+            setHasAccess(true);
+            setSubscriptionLoading(false);
+            return;
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+
+        if (!cancelled) {
+          setHasAccess(false);
+        }
+      } catch (error) {
+        console.error("Error checking subscription:", error);
+
+        if (!cancelled) {
+          setHasAccess(false);
+        }
+      } finally {
+        if (!cancelled) {
+          setSubscriptionLoading(false);
+        }
+      }
+    }
+
+    if (!authLoading && !userDocLoading) {
+      checkSubscription();
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user, authLoading, userDoc, userDocLoading]);
+
+  if (authLoading || userDocLoading || subscriptionLoading) return <Loader />;
+
   if (!user) {
-    // safety – normally RequireAuth will already have caught this
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  const status = userDoc?.subscriptionStatus || "none";
-
-  if (status !== "active") {
+  if (!hasAccess) {
     return (
       <Navigate
-        to="/pricing"
+        to="/checkout"
         replace
         state={{ from: location, reason: "subscription" }}
       />

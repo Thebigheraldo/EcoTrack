@@ -1,6 +1,5 @@
-// src/pages/SuggestionsPage.jsx
-import React, { useEffect, useState, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
+import React, { useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { auth, db } from "../firebase";
 import TopNav from "../components/TopNav";
 
@@ -8,9 +7,6 @@ import {
   doc,
   getDoc,
   collection,
-  query,
-  orderBy,
-  limit,
   getDocs,
   addDoc,
   updateDoc,
@@ -20,7 +16,6 @@ import {
 
 import { getTailoredSuggestions } from "../utils/suggestionEngine";
 import { getQuestionsForSector } from "../utils/questions";
-import { SUGGESTIONS } from "../utils/suggestions"; // fallback pool
 import "../components/landing.css";
 import ecoTrackLogo from "../assets/ecotrack-logo.png";
 
@@ -117,70 +112,154 @@ function pillarLabel(p) {
   return "—";
 }
 
-function sectorKey(v) {
-  return String(v || "").trim().toLowerCase();
+function to100(v) {
+  if (typeof v !== "number" || Number.isNaN(v)) return null;
+  if (v >= 0 && v <= 1) return Math.round(v * 100);
+  return Math.round(v);
 }
 
-/* ---------- keep numeric answers when possible ---------- */
-function adaptAnswersForSuggestionEngine(rawAnswers) {
-  const answers = rawAnswers || {};
-  const out = {};
+function scoreToLabel(score) {
+  if (score === 0) return "Not in place";
+  if (score === 1) return "Informal / ad hoc";
+  if (score === 2) return "Partially structured";
+  if (score === 3) return "Implemented & documented";
+  if (score === 4) return "Advanced / best practice";
+  return "Not answered";
+}
 
-  for (const [qid, v] of Object.entries(answers)) {
-    if (typeof v === "number") {
-      out[qid] = v;
-      continue;
-    }
-    if (typeof v === "string") {
-      const s = v.trim().toLowerCase();
-      if (s === "na" || s === "n/a") out[qid] = "NA";
-      else if (s === "unknown") out[qid] = "Unknown";
-      else if (s === "no") out[qid] = 0;
-      else if (s === "yes") out[qid] = 3;
-      else {
-        const n = Number(s);
-        out[qid] = Number.isNaN(n) ? v : n;
-      }
-      continue;
-    }
-    if (!v) {
-      out[qid] = "Unknown";
-      continue;
-    }
-
-    const score =
-      typeof v.score === "number"
-        ? v.score
-        : typeof v.value === "number"
-        ? v.value
-        : typeof v.points === "number"
-        ? v.points
-        : null;
-
-    const label = v.label != null ? String(v.label) : "";
-    const l = label.trim().toLowerCase();
-
-    if (l === "na" || l === "n/a") out[qid] = "NA";
-    else if (l === "unknown") out[qid] = "Unknown";
-    else if (l === "no") out[qid] = 0;
-    else if (l === "yes") out[qid] = 3;
-    else if (score != null) out[qid] = score;
-    else out[qid] = "Unknown";
+function normalizeAnswer(val) {
+  if (val && typeof val === "object" && typeof val.score === "number") {
+    let s = val.score;
+    if (s < 0) s = 0;
+    if (s > 4) s = 4;
+    return {
+      score: s,
+      label: val.label || val.answerLabel || scoreToLabel(s),
+    };
   }
 
-  return out;
+  if (val && typeof val === "object" && typeof val.answerScore === "number") {
+    let s = val.answerScore;
+    if (s < 0) s = 0;
+    if (s > 4) s = 4;
+    return {
+      score: s,
+      label: val.answerLabel || val.label || scoreToLabel(s),
+    };
+  }
+
+  if (typeof val === "number") {
+    let s = val;
+    if (s < 0) s = 0;
+    if (s > 4) s = 4;
+    return { score: s, label: scoreToLabel(s) };
+  }
+
+  if (val === "Yes") return { score: 4, label: "Yes (fully in place)" };
+  if (val === "No") return { score: 0, label: "No (not in place)" };
+  if (val === "Unknown") return { score: 0, label: "Unknown" };
+  if (val === "Partial") return { score: 2, label: "Partially structured" };
+
+  if (typeof val === "string") {
+    const lower = val.trim().toLowerCase();
+    if (lower === "not in place") return { score: 0, label: "Not in place" };
+    if (lower === "informal / ad hoc" || lower === "informal/ad hoc") {
+      return { score: 1, label: "Informal / ad hoc" };
+    }
+    if (lower === "partially structured") {
+      return { score: 2, label: "Partially structured" };
+    }
+    if (
+      lower === "implemented & documented" ||
+      lower === "implemented and documented"
+    ) {
+      return { score: 3, label: "Implemented & documented" };
+    }
+    if (
+      lower === "advanced / best practice" ||
+      lower === "advanced/best practice"
+    ) {
+      return { score: 4, label: "Advanced / best practice" };
+    }
+  }
+
+  return null;
+}
+
+function coerceAnswersMap(sector, incomingAnswers) {
+  const questions = getQuestionsForSector(sector || "") || [];
+
+  if (!incomingAnswers) return {};
+
+  if (!Array.isArray(incomingAnswers) && typeof incomingAnswers === "object") {
+    return incomingAnswers;
+  }
+
+  if (Array.isArray(incomingAnswers)) {
+    const out = {};
+
+    incomingAnswers.forEach((item, idx) => {
+      const q = questions[idx];
+      if (!q) return;
+
+      const normalized =
+        normalizeAnswer(item) ||
+        normalizeAnswer(item?.answer) ||
+        normalizeAnswer({
+          score: item?.score ?? item?.answerScore ?? item?.numericScore,
+          label: item?.answerLabel ?? item?.label,
+        });
+
+      if (normalized) {
+        out[q.id] = normalized;
+      }
+    });
+
+    return out;
+  }
+
+  return {};
+}
+
+function tsToMillis(ts) {
+  if (!ts) return 0;
+  try {
+    if (typeof ts.toDate === "function") return ts.toDate().getTime();
+    const d = new Date(ts);
+    const n = d.getTime();
+    return Number.isNaN(n) ? 0 : n;
+  } catch {
+    return 0;
+  }
+}
+
+function buildAssessmentMeta(docData = {}, assessmentId = null) {
+  const legacyPillars = docData?.pillarScores || {};
+
+  return {
+    id: assessmentId || docData.id || null,
+    createdAt: docData.completedAt || docData.createdAt || null,
+    status: docData.status || "draft",
+    overall: to100(docData.overallScore ?? docData.overall),
+    env: to100(docData.envScore ?? legacyPillars.E),
+    soc: to100(docData.socScore ?? legacyPillars.S),
+    gov: to100(docData.govScore ?? legacyPillars.G),
+  };
 }
 
 /* ---------- main ---------- */
 export default function SuggestionsPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+
+  const routeState = location.state || {};
 
   const [loading, setLoading] = useState(true);
   const [userId, setUserId] = useState(null);
 
   const [userName, setUserName] = useState("");
   const [sector, setSector] = useState("");
-  const [source, setSource] = useState("none"); // "assessment" | "profile" | "none"
+  const [source, setSource] = useState("none"); // route | assessment | profile | none
 
   const [profile, setProfile] = useState({
     size: "",
@@ -193,8 +272,6 @@ export default function SuggestionsPage() {
 
   const [latestAnswers, setLatestAnswers] = useState({});
   const [assessmentMeta, setAssessmentMeta] = useState(null);
-
-  const [suggestions, setSuggestions] = useState([]);
 
   // Action plan
   const [actionPlan, setActionPlan] = useState([]);
@@ -221,7 +298,7 @@ export default function SuggestionsPage() {
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState("recommend");
 
-  /* ---------- load profile + assessments ---------- */
+  /* ---------- load profile + assessment context ---------- */
   useEffect(() => {
     let alive = true;
 
@@ -235,106 +312,126 @@ export default function SuggestionsPage() {
       if (!alive) return;
       setUserId(u.uid);
 
-      const userSnap = await getDoc(doc(db, "users", u.uid));
-      const userData = userSnap.exists() ? userSnap.data() : {};
+      try {
+        const userSnap = await getDoc(doc(db, "users", u.uid));
+        const userData = userSnap.exists() ? userSnap.data() : {};
 
-      const name =
-        userData.name ||
-        userData.profile?.name ||
-        (u.email?.split("@")[0] ?? "");
+        const name =
+          userData.name ||
+          userData.profile?.name ||
+          (u.email?.split("@")[0] ?? "");
 
-      const profileDoc = userData.profile || {};
-      const profileSector = profileDoc.sector || "";
-
-      setProfile({
-        size: profileDoc.size || "",
-        country: profileDoc.country || "",
-        turnover: profileDoc.turnover || "",
-        csrd:
-          profileDoc.csrd ||
-          profileDoc.csrdInScope ||
-          profileDoc.csrdScope ||
-          profileDoc.csrdStatus ||
-          "",
-        goal: profileDoc.goal || profileDoc.primaryGoal || "",
-        timeline: profileDoc.timeline || "",
-      });
-
-      // Load last 5 assessments
-      const col = collection(db, "users", u.uid, "assessments");
-      const qy = query(col, orderBy("createdAt", "desc"), limit(5));
-      const snaps = await getDocs(qy);
-      const docs = snaps.docs.map((d) => ({ id: d.id, ...d.data() }));
-
-      const chosen =
-        docs.find((d) => d.status === "submitted") || docs[0] || null;
-
-      const to100 = (v) => {
-        if (typeof v !== "number" || Number.isNaN(v)) return null;
-        if (v >= 0 && v <= 1) return Math.round(v * 100);
-        return Math.round(v);
-      };
-
-      const fromLegacyPillars = (d) => {
-        const ps = d?.pillarScores;
-        if (!ps || typeof ps !== "object")
-          return { env: null, soc: null, gov: null };
-        return {
-          env: to100(ps.E),
-          soc: to100(ps.S),
-          gov: to100(ps.G),
+        const profileDoc = userData.profile || {};
+        const baseProfile = {
+          size: profileDoc.size || "",
+          country: profileDoc.country || "",
+          turnover: profileDoc.turnover || "",
+          csrd:
+            profileDoc.csrd ||
+            profileDoc.csrdInScope ||
+            profileDoc.csrdScope ||
+            profileDoc.csrdStatus ||
+            "",
+          goal: profileDoc.goal || profileDoc.primaryGoal || "",
+          timeline: profileDoc.timeline || "",
         };
-      };
-
-      if (chosen) {
-        const chosenSector = chosen.sector || profileSector || "";
-
-        const overall = to100(chosen.overallScore);
-        const env = to100(chosen.envScore);
-        const soc = to100(chosen.socScore);
-        const gov = to100(chosen.govScore);
-
-        const legacyOverall = overall ?? to100(chosen.overall);
-        const legacyPillars = fromLegacyPillars(chosen);
-
-        const finalOverall = overall ?? legacyOverall ?? null;
-        const finalEnv = env ?? legacyPillars.env ?? null;
-        const finalSoc = soc ?? legacyPillars.soc ?? null;
-        const finalGov = gov ?? legacyPillars.gov ?? null;
 
         if (!alive) return;
+        setUserName(name);
 
-        setSector(chosenSector);
-        setLatestAnswers(chosen.answers || {});
-        setSource("assessment");
+        const routeSector = routeState?.sector || "";
+        const routeProfile = routeState?.profile || {};
+        const mergedProfile = {
+          ...baseProfile,
+          ...routeProfile,
+        };
 
-        setAssessmentMeta({
-          id: chosen.id,
-          createdAt: chosen.createdAt || null,
-          status: chosen.status || "draft",
-          overall: finalOverall,
-          env: finalEnv,
-          soc: finalSoc,
-          gov: finalGov,
+        // 1) Prefer fresh route-state from DetailsPage
+        if (routeSector && (routeState?.answersMap || routeState?.answers)) {
+          const routeAnswersMap =
+            routeState.answersMap ||
+            coerceAnswersMap(routeSector, routeState.answers);
+
+          setProfile(mergedProfile);
+          setSector(routeSector);
+          setLatestAnswers(routeAnswersMap);
+          setSource("route");
+          setAssessmentMeta({
+            id: routeState?.assessmentId || null,
+            createdAt: null,
+            status: "submitted",
+            overall: to100(routeState?.scores?.overall),
+            env: to100(routeState?.scores?.E),
+            soc: to100(routeState?.scores?.S),
+            gov: to100(routeState?.scores?.G),
+          });
+          setLoading(false);
+          return;
+        }
+
+        // 2) If we have an explicit assessmentId, load that exact assessment
+        if (routeState?.assessmentId) {
+          const snap = await getDoc(
+            doc(db, "users", u.uid, "assessments", routeState.assessmentId)
+          );
+
+          if (snap.exists()) {
+            const data = snap.data() || {};
+            const sectorFromDoc = data.sector || routeSector || profileDoc.sector || "";
+
+            setProfile(mergedProfile);
+            setSector(sectorFromDoc);
+            setLatestAnswers(data.answers || {});
+            setSource("assessment");
+            setAssessmentMeta(buildAssessmentMeta(data, snap.id));
+            setLoading(false);
+            return;
+          }
+        }
+
+        // 3) Otherwise fall back to latest assessment from Firestore
+        const colRef = collection(db, "users", u.uid, "assessments");
+        const snaps = await getDocs(colRef);
+        const docs = snaps.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+        docs.sort((a, b) => {
+          const aTime = Math.max(tsToMillis(a.completedAt), tsToMillis(a.createdAt));
+          const bTime = Math.max(tsToMillis(b.completedAt), tsToMillis(b.createdAt));
+          return bTime - aTime;
         });
-      } else {
+
+        const submittedFirst =
+          docs.find((d) => d.status === "submitted") || docs[0] || null;
+
+        if (submittedFirst) {
+          const chosenSector =
+            submittedFirst.sector || profileDoc.sector || "";
+
+          setProfile(baseProfile);
+          setSector(chosenSector);
+          setLatestAnswers(submittedFirst.answers || {});
+          setSource("assessment");
+          setAssessmentMeta(buildAssessmentMeta(submittedFirst, submittedFirst.id));
+        } else {
+          setProfile(baseProfile);
+          setSector(profileDoc.sector || "");
+          setLatestAnswers({});
+          setSource(profileDoc.sector ? "profile" : "none");
+          setAssessmentMeta(null);
+        }
+
+        setLoading(false);
+      } catch (err) {
+        console.error("Error loading Suggestions page data", err);
         if (!alive) return;
-
-        setSector(profileSector || "");
-        setLatestAnswers({});
-        setSource(profileSector ? "profile" : "none");
-        setAssessmentMeta(null);
+        setLoading(false);
       }
-
-      if (!alive) return;
-      setUserName(name);
-      setLoading(false);
     })();
 
     return () => {
       alive = false;
     };
-  }, [navigate]);
+  }, [navigate, routeState]);
 
   /* ---------- load action plan ---------- */
   useEffect(() => {
@@ -344,9 +441,10 @@ export default function SuggestionsPage() {
       setPlanError("");
       try {
         const colRef = collection(db, "users", userId, "actionPlan");
-        const qy = query(colRef, orderBy("createdAt", "asc"));
-        const snaps = await getDocs(qy);
-        const items = snaps.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const snaps = await getDocs(colRef);
+        const items = snaps.docs
+          .map((d) => ({ id: d.id, ...d.data() }))
+          .sort((a, b) => tsToMillis(a.createdAt) - tsToMillis(b.createdAt));
         setActionPlan(items);
       } catch (e) {
         console.error("Error loading action plan", e);
@@ -363,17 +461,10 @@ export default function SuggestionsPage() {
 
   const pillarPercents = useMemo(() => {
     if (!assessmentMeta) return null;
-
-    const toPct = (v) => {
-      if (typeof v !== "number" || Number.isNaN(v)) return null;
-      if (v >= 0 && v <= 1) return Math.round(v * 100);
-      return Math.round(v);
-    };
-
     return {
-      E: toPct(assessmentMeta.env),
-      S: toPct(assessmentMeta.soc),
-      G: toPct(assessmentMeta.gov),
+      E: to100(assessmentMeta.env),
+      S: to100(assessmentMeta.soc),
+      G: to100(assessmentMeta.gov),
     };
   }, [assessmentMeta]);
 
@@ -386,63 +477,69 @@ export default function SuggestionsPage() {
       ["G", pillarPercents.G],
     ].filter(([, v]) => typeof v === "number");
 
-    const below = entries.filter(([, v]) => v < PILLAR_THRESHOLD).map(([p]) => p);
+    const below = entries
+      .filter(([, v]) => v < PILLAR_THRESHOLD)
+      .map(([p]) => p);
+
     if (below.length) return { pillars: below, mode: "threshold" };
 
-    // none below threshold => lowest 2
     entries.sort((a, b) => a[1] - b[1]);
-    const lowest = entries.slice(0, Math.max(1, LOWEST_PILLARS_FALLBACK)).map(([p]) => p);
+    const lowest = entries
+      .slice(0, Math.max(1, LOWEST_PILLARS_FALLBACK))
+      .map(([p]) => p);
+
     return { pillars: lowest, mode: "lowest" };
   }, [pillarPercents]);
 
   const selectedPillars = selectedPillarsInfo.pillars;
 
   /* ---------- build suggestions ---------- */
-  const answersForEngine = useMemo(
-    () => adaptAnswersForSuggestionEngine(latestAnswers),
-    [latestAnswers]
+  const sectorQuestions = useMemo(
+    () => getQuestionsForSector(sector || ""),
+    [sector]
   );
 
-  useEffect(() => {
-    if (loading) return;
+  const tailoredSuggestions = useMemo(() => {
+    if (loading) return [];
+    if (!sector || !sectorQuestions.length) return [];
+    if (!latestAnswers || Object.keys(latestAnswers).length === 0) return [];
 
-    const sec = String(sector || "").trim();
-    const qs = getQuestionsForSector(sec) || [];
-
-    let list = getTailoredSuggestions({
-      sector: sec,
-      questions: qs,
-      answers: answersForEngine,
+    return getTailoredSuggestions({
+      sector,
+      questions: sectorQuestions,
+      answers: latestAnswers,
       profile,
       limit: 40,
       pillarPercents,
       pillarThreshold: PILLAR_THRESHOLD,
       fallbackLowestNPillars: LOWEST_PILLARS_FALLBACK,
     });
+  }, [
+    loading,
+    sector,
+    sectorQuestions,
+    latestAnswers,
+    profile,
+    pillarPercents,
+  ]);
 
-    // Fallback if engine returns nothing
-    if (!Array.isArray(list) || list.length === 0) {
-      const wanted = sectorKey(sec);
-      list = (Array.isArray(SUGGESTIONS) ? SUGGESTIONS : []).filter((s) => {
-        const secs = (s.sectors || []).map((x) => String(x || "").trim().toLowerCase());
-        return secs.includes("*") || secs.includes("all") || secs.includes(wanted);
-      });
-    }
-
-    const enriched = (list || []).map((s, idx) => {
+  const suggestions = useMemo(() => {
+    return (tailoredSuggestions || []).map((s, idx) => {
       const p = (s.pillar || "").toUpperCase();
       const pct = pillarPercents?.[p];
 
       let why = "";
       if (selectedPillars.includes(p)) {
         if (selectedPillarsInfo.mode === "threshold") {
-          why = pct != null
-            ? `${pillarLabel(p)} is below ${PILLAR_THRESHOLD}% (${pct}%).`
-            : `${pillarLabel(p)} is below ${PILLAR_THRESHOLD}%.`;
+          why =
+            pct != null
+              ? `${pillarLabel(p)} is below ${PILLAR_THRESHOLD}% (${pct}%).`
+              : `${pillarLabel(p)} is below ${PILLAR_THRESHOLD}%.`;
         } else if (selectedPillarsInfo.mode === "lowest") {
-          why = pct != null
-            ? `${pillarLabel(p)} is among your lowest pillars (${pct}%).`
-            : `${pillarLabel(p)} is among your lowest pillars.`;
+          why =
+            pct != null
+              ? `${pillarLabel(p)} is among your lowest pillars (${pct}%).`
+              : `${pillarLabel(p)} is among your lowest pillars.`;
         }
       }
 
@@ -456,25 +553,17 @@ export default function SuggestionsPage() {
         _why: why,
       };
     });
-
-    setSuggestions(enriched);
-  }, [
-    loading,
-    sector,
-    answersForEngine,
-    profile,
-    pillarPercents,
-    selectedPillars,
-    selectedPillarsInfo.mode,
-  ]);
+  }, [tailoredSuggestions, pillarPercents, selectedPillars, selectedPillarsInfo.mode]);
 
   /* ---------- derived ---------- */
   const sourceHint =
-    source === "assessment"
-      ? "Based on your latest ESG assessment + onboarding profile"
+    source === "route"
+      ? "Based on the assessment you just completed"
+      : source === "assessment"
+      ? "Based on your latest saved ESG assessment"
       : source === "profile"
-      ? "Based on your onboarding profile (no assessment answers found)"
-      : "No assessment/profile found — showing generic actions";
+      ? "No assessment answers found — complete an assessment to unlock tailored actions"
+      : "No assessment found — complete an assessment to unlock tailored actions";
 
   const hasSuggestions = suggestions && suggestions.length > 0;
 
@@ -482,29 +571,42 @@ export default function SuggestionsPage() {
   const filteredAndSortedSuggestions = useMemo(() => {
     let list = [...suggestions];
 
-    if (filterPillar) list = list.filter((s) => (s.pillar || "") === filterPillar);
+    if (filterPillar) {
+      list = list.filter((s) => (s.pillar || "") === filterPillar);
+    }
 
     if (filterImpact) {
       list = list.filter(
         (s) => (s.impact || "").toLowerCase() === filterImpact.toLowerCase()
       );
     }
+
     if (filterEffort) {
       list = list.filter(
         (s) => (s.effort || "").toLowerCase() === filterEffort.toLowerCase()
       );
     }
+
     if (filterTimeframe) {
       const key = filterTimeframe.toLowerCase();
       list = list.filter((s) => {
         const tf = (s.timeframe || "").toLowerCase();
-        if (key === "quick") return tf.includes("quick") || tf.includes("0–6") || tf.includes("0-6");
-        if (key === "0–6" || key === "0-6") return tf.includes("0–6") || tf.includes("0-6");
-        if (key === "6–12" || key === "6-12") return tf.includes("6–12") || tf.includes("6-12");
-        if (key === "12") return tf.includes("12");
+        if (key === "quick") {
+          return tf.includes("quick") || tf.includes("0–6") || tf.includes("0-6");
+        }
+        if (key === "0–6" || key === "0-6") {
+          return tf.includes("0–6") || tf.includes("0-6");
+        }
+        if (key === "6–12" || key === "6-12") {
+          return tf.includes("6–12") || tf.includes("6-12");
+        }
+        if (key === "12") {
+          return tf.includes("12");
+        }
         return true;
       });
     }
+
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       list = list.filter((s) => {
@@ -517,6 +619,7 @@ export default function SuggestionsPage() {
 
     const impactRank = (impact) =>
       impact === "High" ? 3 : impact === "Medium" ? 2 : impact === "Low" ? 1 : 0;
+
     const effortRank = (effort) =>
       effort === "Low" ? 3 : effort === "Medium" ? 2 : effort === "High" ? 1 : 0;
 
@@ -528,10 +631,11 @@ export default function SuggestionsPage() {
         const tb = (b.title || b.text || "").toLowerCase();
         return ta.localeCompare(tb);
       }
-      // recommend: prioritize selected pillars via _why, then impact/effort
+
       const wa = a._why ? 1 : 0;
       const wb = b._why ? 1 : 0;
       if (wb !== wa) return wb - wa;
+
       return (
         impactRank(b.impact) * 10 +
         effortRank(b.effort) -
@@ -560,11 +664,9 @@ export default function SuggestionsPage() {
 
     setPlanError("");
 
-    const text = suggestion.text || "Action item";
-
     const payload = {
       suggestionId: suggestion.id,
-      text,
+      text: suggestion.text || "Action item",
       tags: suggestion.tags || [],
       impact: normalizeImpact(suggestion.impact),
       effort: normalizeEffort(suggestion.effort),
@@ -598,6 +700,7 @@ export default function SuggestionsPage() {
         completed: newCompleted,
         updatedAt: serverTimestamp(),
       });
+
       setActionPlan((prev) =>
         prev.map((p) =>
           p.id === item.id ? { ...p, completed: newCompleted, updatedAt: new Date() } : p
@@ -622,7 +725,7 @@ export default function SuggestionsPage() {
     }
   };
 
-  /* ---------- Export Action Plan PDF (kept as-is) ---------- */
+  /* ---------- Export Action Plan PDF ---------- */
   const handleExportPlanPDF = async () => {
     if (!actionPlan.length) return;
 
@@ -749,9 +852,20 @@ export default function SuggestionsPage() {
     return (
       <div className="landing" style={{ alignItems: "stretch" }}>
         <TopNav />
-        <main className="landing__main" style={{ maxWidth: 1200, width: "100%", paddingTop: 80 }}>
+        <main
+          className="landing__main"
+          style={{ maxWidth: 1200, width: "100%", paddingTop: 80 }}
+        >
           <Card>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, color: "#64748b" }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 14,
+                color: "#64748b",
+              }}
+            >
               <span
                 className="spinner"
                 style={{
@@ -777,9 +891,19 @@ export default function SuggestionsPage() {
 
   const renderActionPlanCard = () => (
     <Card>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, gap: 8 }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 8,
+          gap: 8,
+        }}
+      >
         <div>
-          <div style={{ fontSize: 15, fontWeight: 600, color: "#0f172a" }}>Your Action Plan</div>
+          <div style={{ fontSize: 15, fontWeight: 600, color: "#0f172a" }}>
+            Your Action Plan
+          </div>
           <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
             Add actions from suggestions, then track progress here.
           </div>
@@ -790,7 +914,15 @@ export default function SuggestionsPage() {
         </Badge>
       </div>
 
-      <div style={{ width: "100%", height: 6, borderRadius: 999, background: "#e2e8f0", marginBottom: 8 }}>
+      <div
+        style={{
+          width: "100%",
+          height: 6,
+          borderRadius: 999,
+          background: "#e2e8f0",
+          marginBottom: 8,
+        }}
+      >
         <div
           style={{
             width: `${completionRatio * 100}%`,
@@ -802,7 +934,11 @@ export default function SuggestionsPage() {
         />
       </div>
 
-      {planError && <div style={{ marginBottom: 8, fontSize: 12, color: "#b91c1c" }}>{planError}</div>}
+      {planError && (
+        <div style={{ marginBottom: 8, fontSize: 12, color: "#b91c1c" }}>
+          {planError}
+        </div>
+      )}
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
         {actionPlan.length > 0 && (
@@ -861,10 +997,26 @@ export default function SuggestionsPage() {
               </button>
 
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 500, color: "#0f172a", textDecoration: item.completed ? "line-through" : "none" }}>
+                <div
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 500,
+                    color: "#0f172a",
+                    textDecoration: item.completed ? "line-through" : "none",
+                  }}
+                >
                   {item.text}
                 </div>
-                <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 4, fontSize: 11, color: "#64748b" }}>
+                <div
+                  style={{
+                    marginTop: 4,
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 4,
+                    fontSize: 11,
+                    color: "#64748b",
+                  }}
+                >
                   {item.impact && <Badge>{item.impact}</Badge>}
                   {item.effort && <Badge>Effort: {item.effort}</Badge>}
                   {item.timeframe && <Badge>{item.timeframe}</Badge>}
@@ -874,7 +1026,13 @@ export default function SuggestionsPage() {
               <button
                 type="button"
                 onClick={() => handleRemoveFromPlan(item)}
-                style={{ border: "none", background: "transparent", color: "#94a3b8", fontSize: 14, cursor: "pointer" }}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  color: "#94a3b8",
+                  fontSize: 14,
+                  cursor: "pointer",
+                }}
               >
                 ×
               </button>
@@ -889,16 +1047,40 @@ export default function SuggestionsPage() {
   const renderSuggestionsColumn = () => (
     <div style={{ display: "grid", gap: 12 }}>
       {hasSuggestions ? (
-        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
+        <div
+          style={{
+            display: "grid",
+            gap: 12,
+            gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+          }}
+        >
           {filteredAndSortedSuggestions.map((s) => (
             <Card key={s.id}>
-              <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4, color: "#0f172a" }}>
+              <div
+                style={{
+                  fontSize: 15,
+                  fontWeight: 600,
+                  marginBottom: 4,
+                  color: "#0f172a",
+                }}
+              >
                 {s.title || "Suggested action"}
               </div>
 
-              <div style={{ fontSize: 14, color: "#0f172a", lineHeight: 1.4 }}>{s.text}</div>
+              <div style={{ fontSize: 14, color: "#0f172a", lineHeight: 1.4 }}>
+                {s.text}
+              </div>
 
-              <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6, fontSize: 11, color: "#64748b" }}>
+              <div
+                style={{
+                  marginTop: 8,
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 6,
+                  fontSize: 11,
+                  color: "#64748b",
+                }}
+              >
                 {s.pillar && <Badge>{s.pillar}</Badge>}
                 <Badge>Impact: {normalizeImpact(s.impact)}</Badge>
                 <Badge>Effort: {normalizeEffort(s.effort)}</Badge>
@@ -925,7 +1107,15 @@ export default function SuggestionsPage() {
               )}
 
               {!!s._why && (
-                <div style={{ marginTop: 8, fontSize: 12, color: "#64748b", borderTop: "1px dashed #e2e8f0", paddingTop: 6 }}>
+                <div
+                  style={{
+                    marginTop: 8,
+                    fontSize: 12,
+                    color: "#64748b",
+                    borderTop: "1px dashed #e2e8f0",
+                    paddingTop: 6,
+                  }}
+                >
                   <strong>Why this?</strong> {s._why}
                 </div>
               )}
@@ -959,10 +1149,31 @@ export default function SuggestionsPage() {
         </div>
       ) : (
         <Card>
-          <div style={{ fontSize: 14, color: "#64748b", display: "flex", flexDirection: "column", gap: 8 }}>
-            <span>No suggestions available yet. Run an assessment to unlock tailored actions.</span>
+          <div
+            style={{
+              fontSize: 14,
+              color: "#64748b",
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+            }}
+          >
+            {Object.keys(latestAnswers || {}).length > 0 ? (
+              <span>
+                No improvement suggestions were generated for this assessment. That usually means your answers are already relatively strong or too many items are at advanced level.
+              </span>
+            ) : (
+              <span>
+                No tailored suggestions available yet. Run an assessment to unlock question-based actions.
+              </span>
+            )}
+
             <div>
-              <NewAssessmentButton label="Start your first assessment" className="btn btn--primary" sector={sector} />
+              <NewAssessmentButton
+                label="Start your assessment"
+                className="btn btn--primary"
+                sector={sector}
+              />
             </div>
           </div>
         </Card>
@@ -977,7 +1188,15 @@ export default function SuggestionsPage() {
 
       <main className="landing__main" style={{ maxWidth: 1200, width: "100%", paddingTop: 80 }}>
         <div style={{ display: "grid", gap: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "baseline",
+              gap: 12,
+              flexWrap: "wrap",
+            }}
+          >
             <div>
               <h1 className="landing__title" style={{ marginBottom: 4 }}>
                 Suggestions
@@ -993,7 +1212,15 @@ export default function SuggestionsPage() {
           </div>
 
           <Card>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 12, justifyContent: "space-between", alignItems: "center" }}>
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 12,
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 <span style={{ fontSize: 14, color: "#64748b" }}>{sourceHint}</span>
 
@@ -1006,11 +1233,21 @@ export default function SuggestionsPage() {
                 </div>
 
                 {assessmentMeta ? (
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 12, color: "#475569" }}>
-                    <Badge>Latest assessment</Badge>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 8,
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      fontSize: 12,
+                      color: "#475569",
+                    }}
+                  >
+                    <Badge>Assessment</Badge>
                     <span>
                       {formatDate(assessmentMeta.createdAt)} • Status: {assessmentMeta.status}
                     </span>
+
                     {assessmentMeta.overall != null && (
                       <>
                         <span>• Overall: {assessmentMeta.overall}%</span>
@@ -1019,9 +1256,14 @@ export default function SuggestionsPage() {
                         {assessmentMeta.gov != null && <span>· G: {assessmentMeta.gov}%</span>}
                       </>
                     )}
+
                     {!!selectedPillars.length && (
                       <span>
-                        • Targeting: {selectedPillars.join(", ")} ({selectedPillarsInfo.mode === "threshold" ? `below ${PILLAR_THRESHOLD}%` : `lowest ${LOWEST_PILLARS_FALLBACK}`})
+                        • Targeting: {selectedPillars.join(", ")} (
+                        {selectedPillarsInfo.mode === "threshold"
+                          ? `below ${PILLAR_THRESHOLD}%`
+                          : `lowest ${LOWEST_PILLARS_FALLBACK}`}
+                        )
                       </span>
                     )}
                   </div>
@@ -1033,7 +1275,11 @@ export default function SuggestionsPage() {
               </div>
 
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <NewAssessmentButton label="Improve score" className="btn btn--primary" sector={sector} />
+                <NewAssessmentButton
+                  label="Improve score"
+                  className="btn btn--primary"
+                  sector={sector}
+                />
               </div>
             </div>
           </Card>
@@ -1056,28 +1302,44 @@ export default function SuggestionsPage() {
                 }}
               />
 
-              <select value={filterPillar} onChange={(e) => setFilterPillar(e.target.value)} style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}>
+              <select
+                value={filterPillar}
+                onChange={(e) => setFilterPillar(e.target.value)}
+                style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}
+              >
                 <option value="">All pillars</option>
                 <option value="E">Environmental</option>
                 <option value="S">Social</option>
                 <option value="G">Governance</option>
               </select>
 
-              <select value={filterImpact} onChange={(e) => setFilterImpact(e.target.value)} style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}>
+              <select
+                value={filterImpact}
+                onChange={(e) => setFilterImpact(e.target.value)}
+                style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}
+              >
                 <option value="">Any impact</option>
                 <option value="High">High</option>
                 <option value="Medium">Medium</option>
                 <option value="Low">Low</option>
               </select>
 
-              <select value={filterEffort} onChange={(e) => setFilterEffort(e.target.value)} style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}>
+              <select
+                value={filterEffort}
+                onChange={(e) => setFilterEffort(e.target.value)}
+                style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}
+              >
                 <option value="">Any effort</option>
                 <option value="Low">Low effort</option>
                 <option value="Medium">Medium</option>
                 <option value="High">High</option>
               </select>
 
-              <select value={filterTimeframe} onChange={(e) => setFilterTimeframe(e.target.value)} style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}>
+              <select
+                value={filterTimeframe}
+                onChange={(e) => setFilterTimeframe(e.target.value)}
+                style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}
+              >
                 <option value="">Any timeframe</option>
                 <option value="0–6">0–6 months</option>
                 <option value="6–12">6–12 months</option>
@@ -1085,7 +1347,11 @@ export default function SuggestionsPage() {
                 <option value="quick">Quick wins</option>
               </select>
 
-              <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}>
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                style={{ padding: 8, borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}
+              >
                 <option value="recommend">Recommended</option>
                 <option value="impact">High impact first</option>
                 <option value="effort">Low effort first</option>
@@ -1101,9 +1367,17 @@ export default function SuggestionsPage() {
               {renderSuggestionsColumn()}
             </div>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(0, 1.1fr)", gap: 16 }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(0, 2fr) minmax(0, 1.1fr)",
+                gap: 16,
+              }}
+            >
               {renderSuggestionsColumn()}
-              <div style={{ position: "sticky", top: 88, alignSelf: "flex-start" }}>{renderActionPlanCard()}</div>
+              <div style={{ position: "sticky", top: 88, alignSelf: "flex-start" }}>
+                {renderActionPlanCard()}
+              </div>
             </div>
           )}
         </div>

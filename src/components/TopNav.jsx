@@ -15,9 +15,18 @@ const COLORS = {
   bgCard: "#FFFFFF",
 };
 
+const LEGAL_LINKS = [
+  { to: "/terms-and-conditions", label: "Terms of Use" },
+  { to: "/privacy-policy", label: "Privacy Policy" },
+  { to: "/refund-policy", label: "Refund Policy" },
+  { to: "/cookie-policy", label: "Cookie Policy" },
+  { to: "/dpa", label: "DPA" },
+  { to: "/legal-notice", label: "Legal Notice" },
+];
+
 /**
  * Option B:
- * - disableMenu: hides Menu button + dropdown completely (not accessible)
+ * - disableMenu: hides Menu button + dropdown completely
  * - disableFeedback: hides FeedbackButton
  * - hideOnRoutes: if true, TopNav hides itself on certain public routes
  */
@@ -32,10 +41,10 @@ export default function TopNav({
   const location = useLocation();
 
   const { userDoc } = useUserDoc();
+
   const isAdmin = userDoc?.role === "admin";
   const sector = userDoc?.profile?.sector || userDoc?.sector || null;
 
-  // Optional: auto-hide TopNav on specific routes (if you want)
   const shouldHideTopNav = useMemo(() => {
     if (!hideOnRoutes) return false;
 
@@ -53,8 +62,12 @@ export default function TopNav({
   }, [hideOnRoutes, location.pathname]);
 
   const toggleMenu = () => {
-    if (disableMenu) return; // safety
+    if (disableMenu) return;
     setOpen((v) => !v);
+  };
+
+  const closeMenu = () => {
+    setOpen(false);
   };
 
   const handleLogout = async () => {
@@ -64,6 +77,11 @@ export default function TopNav({
     } catch (e) {
       console.error("Logout failed", e);
     }
+  };
+
+  const goHome = () => {
+    if (isAdmin) navigate("/admin");
+    else navigate("/dashboard");
   };
 
   // Close menu on outside click
@@ -85,17 +103,11 @@ export default function TopNav({
     };
   }, [open]);
 
-  // Close dropdown if we disable menu or route changes
+  // Close dropdown if menu is disabled or route changes
   useEffect(() => {
     setOpen(false);
   }, [disableMenu, location.pathname]);
 
-  const goHome = () => {
-    if (isAdmin) navigate("/admin");
-    else navigate("/dashboard");
-  };
-
-  // If using hideOnRoutes, TopNav can disappear entirely on those pages
   if (shouldHideTopNav) return null;
 
   return (
@@ -119,9 +131,18 @@ export default function TopNav({
       }}
     >
       {/* Left: logo / title */}
-      <div
-        style={{ display: "flex", flexDirection: "column", cursor: "pointer" }}
+      <button
+        type="button"
         onClick={goHome}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "flex-start",
+          cursor: "pointer",
+          background: "transparent",
+          border: "none",
+          padding: 0,
+        }}
       >
         <span style={{ fontWeight: 700, fontSize: 18, color: COLORS.dark }}>
           EcoTrack
@@ -129,28 +150,28 @@ export default function TopNav({
         <span style={{ fontSize: 12, color: COLORS.muted }}>
           ESG self-assessment for SMEs
         </span>
-      </div>
+      </button>
 
       {/* Right side */}
       <div
+        ref={menuRef}
         style={{
           position: "relative",
           display: "flex",
           alignItems: "center",
           gap: 8,
         }}
-        ref={menuRef}
       >
-        {/* Feedback button (optional) */}
         {!disableFeedback && <FeedbackButton />}
 
-        {/* Menu button + dropdown (only if NOT disabled) */}
         {!disableMenu && (
           <>
             <button
               type="button"
               onClick={toggleMenu}
               className="btn btn--ghost"
+              aria-haspopup="menu"
+              aria-expanded={open}
               style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -159,7 +180,15 @@ export default function TopNav({
               }}
             >
               <span>Menu</span>
-              <span style={{ display: "inline-flex", flexDirection: "column", gap: 3 }}>
+
+              <span
+                style={{
+                  display: "inline-flex",
+                  flexDirection: "column",
+                  gap: 3,
+                }}
+                aria-hidden="true"
+              >
                 <span
                   style={{
                     width: 14,
@@ -181,11 +210,12 @@ export default function TopNav({
 
             {open && (
               <div
+                role="menu"
                 style={{
                   position: "absolute",
                   top: "110%",
                   right: 0,
-                  minWidth: 220,
+                  minWidth: 240,
                   background: "#FFFFFF",
                   borderRadius: 12,
                   boxShadow: "0 12px 30px rgba(15,23,42,0.18)",
@@ -194,12 +224,28 @@ export default function TopNav({
                   zIndex: 1050,
                 }}
               >
-                {/* ===== ADMIN MENU ===== */}
                 {isAdmin ? (
                   <>
                     <SectionLabel>Navigation</SectionLabel>
 
-                    <MenuLink to="/admin" label="Admin dashboard" onClick={() => setOpen(false)} />
+                    <MenuLink
+                      to="/admin"
+                      label="Admin dashboard"
+                      onClick={closeMenu}
+                    />
+
+                    <Divider />
+
+                    <SectionLabel>Legal documents</SectionLabel>
+
+                    {LEGAL_LINKS.map((item) => (
+                      <MenuLink
+                        key={item.to}
+                        to={item.to}
+                        label={item.label}
+                        onClick={closeMenu}
+                      />
+                    ))}
 
                     <Divider />
 
@@ -213,17 +259,54 @@ export default function TopNav({
                       <NewAssessmentButton
                         label="New Assessment"
                         className="btn btn--primary"
-                        style={{ width: "100%", justifyContent: "flex-start" }}
+                        style={{
+                          width: "100%",
+                          justifyContent: "flex-start",
+                        }}
                         sector={sector}
                       />
                     </div>
 
+                    <Divider />
+
                     <SectionLabel>Navigation</SectionLabel>
 
-                    <MenuLink to="/dashboard" label="Dashboard" onClick={() => setOpen(false)} />
-                    <MenuLink to="/suggestions" label="Suggestions" onClick={() => setOpen(false)} />
-                    <MenuLink to="/methodology" label="Methodology" onClick={() => setOpen(false)} />
-                    <MenuLink to="/profile" label="Profile & Settings" onClick={() => setOpen(false)} />
+                    <MenuLink
+                      to="/dashboard"
+                      label="Dashboard"
+                      onClick={closeMenu}
+                    />
+
+                    <MenuLink
+                      to="/suggestions"
+                      label="Suggestions"
+                      onClick={closeMenu}
+                    />
+
+                    <MenuLink
+                      to="/methodology"
+                      label="Methodology"
+                      onClick={closeMenu}
+                    />
+
+                    <MenuLink
+                      to="/profile"
+                      label="Profile & Settings"
+                      onClick={closeMenu}
+                    />
+
+                    <Divider />
+
+                    <SectionLabel>Legal documents</SectionLabel>
+
+                    {LEGAL_LINKS.map((item) => (
+                      <MenuLink
+                        key={item.to}
+                        to={item.to}
+                        label={item.label}
+                        onClick={closeMenu}
+                      />
+                    ))}
 
                     <Divider />
 
@@ -240,15 +323,17 @@ export default function TopNav({
 }
 
 /* ---------- small UI components ---------- */
+
 function SectionLabel({ children }) {
   return (
     <div
       style={{
-        padding: "4px 8px 6px",
+        padding: "6px 8px 6px",
         fontSize: 11,
         textTransform: "uppercase",
-        letterSpacing: 0.06,
+        letterSpacing: "0.06em",
         color: "#64748B",
+        fontWeight: 700,
       }}
     >
       {children}
@@ -261,8 +346,7 @@ function Divider() {
     <div
       style={{
         borderTop: "1px solid #E2E8F0",
-        marginTop: 6,
-        paddingTop: 4,
+        margin: "6px 0",
       }}
     />
   );
@@ -282,6 +366,13 @@ function LogoutButton({ onClick }) {
         border: "none",
         cursor: "pointer",
         color: "#B91C1C",
+        borderRadius: 8,
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.background = "#FEF2F2";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = "transparent";
       }}
     >
       Log out

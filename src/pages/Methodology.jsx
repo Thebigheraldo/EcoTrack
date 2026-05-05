@@ -1,21 +1,255 @@
 // src/pages/Methodology.jsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import TopNav from "../components/TopNav";
 import "../components/landing.css";
 
+const CRITICAL_PILLAR_THRESHOLD = 20;
+
+const ANSWER_SCALE = [
+  {
+    label: "Not in place",
+    score: 0,
+    description:
+      "No formal practice, process, policy, or evidence is currently in place.",
+  },
+  {
+    label: "Informal / ad hoc",
+    score: 25,
+    description:
+      "Some actions exist, but they are informal, inconsistent, or not documented.",
+  },
+  {
+    label: "Partially structured",
+    score: 50,
+    description:
+      "A process exists, but it is incomplete, partial, or not regularly reviewed.",
+  },
+  {
+    label: "Implemented and documented",
+    score: 75,
+    description:
+      "A clear practice exists, is implemented, and has supporting documentation.",
+  },
+  {
+    label: "Advanced / best practice",
+    score: 100,
+    description:
+      "The practice is mature, monitored, and continuously improved.",
+  },
+];
+
+const SECTOR_WEIGHTS = {
+  manufacturing: {
+    E: 45,
+    S: 30,
+    G: 25,
+  },
+  agriculture_food: {
+    E: 45,
+    S: 35,
+    G: 20,
+  },
+  textile_fashion: {
+    E: 40,
+    S: 35,
+    G: 25,
+  },
+  tech: {
+    E: 30,
+    S: 35,
+    G: 35,
+  },
+  finance: {
+    E: 20,
+    S: 35,
+    G: 45,
+  },
+  construction: {
+    E: 45,
+    S: 30,
+    G: 25,
+  },
+  furniture: {
+    E: 40,
+    S: 30,
+    G: 30,
+  },
+  transportation: {
+    E: 50,
+    S: 25,
+    G: 25,
+  },
+  default: {
+    E: 34,
+    S: 33,
+    G: 33,
+  },
+};
+
 const sections = [
   { id: "what-ecotrack-measures", label: "1. What EcoTrack measures" },
-  { id: "from-answers-to-scores", label: "2. From answers to numeric scores" },
-  { id: "pillar-scores", label: "3. Pillar scores (E, S and G)" },
-  { id: "sector-weighting", label: "4. Sector-specific weighting & overall ESG score" },
-  { id: "rating-bands", label: "5. Rating bands" },
-  { id: "benchmarks-thresholds", label: "6. Benchmarks & critical thresholds" },
-  { id: "using-results", label: "7. How to use EcoTrack results" },
-  { id: "benchmarking-method", label: "8. How benchmarking is calculated" },
+  { id: "maturity-scale", label: "2. Answer scoring scale" },
+  { id: "pillar-scores", label: "3. ESG pillar scores" },
+  { id: "sector-weighting", label: "4. Sector weighting" },
+  { id: "maturity-bands", label: "5. Maturity bands" },
+  { id: "benchmarks-thresholds", label: "6. Benchmarks & thresholds" },
+  { id: "using-results", label: "7. How to use results" },
+  { id: "benchmarking-method", label: "8. Benchmarking method" },
   { id: "faq", label: "9. FAQ" },
-  { id: "disclaimer", label: "10. Disclaimer & limitations" },
+  { id: "disclaimer", label: "10. Disclaimer" },
 ];
+
+const pillarLabels = {
+  E: "Environmental",
+  S: "Social",
+  G: "Governance",
+};
+
+const sectorLabels = {
+  manufacturing: "Manufacturing",
+  agriculture_food: "Agriculture / Food",
+  textile_fashion: "Textile / Fashion",
+  tech: "Technology",
+  finance: "Finance",
+  construction: "Construction",
+  furniture: "Furniture",
+  transportation: "Transportation",
+  default: "Default / fallback",
+};
+
+const maturityBands = [
+  {
+    range: "0–20",
+    label: "Critical",
+    meaning:
+      "ESG practices are largely absent or highly fragmented. Immediate attention is required.",
+  },
+  {
+    range: "21–40",
+    label: "High risk",
+    meaning:
+      "Some actions exist, but the approach is still weak, inconsistent, or insufficiently documented.",
+  },
+  {
+    range: "41–60",
+    label: "Basic",
+    meaning:
+      "Core ESG foundations are present, but implementation, monitoring, or coverage remains partial.",
+  },
+  {
+    range: "61–80",
+    label: "Advanced",
+    meaning:
+      "Structured ESG practices are in place, supported by policies, responsibilities, and documentation.",
+  },
+  {
+    range: "81–100",
+    label: "Leader",
+    meaning:
+      "ESG is strongly integrated into operations and improvement is actively monitored.",
+  },
+];
+
+const styles = {
+  card: {
+    padding: 18,
+    borderRadius: 18,
+    border: "1px solid #E2E8F0",
+    background: "#FFFFFF",
+    boxShadow: "0 10px 28px rgba(15,23,42,0.06)",
+  },
+  softCard: {
+    padding: 16,
+    borderRadius: 16,
+    border: "1px solid #D9F99D",
+    background: "linear-gradient(135deg, #F0FDF4 0%, #ECFEFF 100%)",
+    boxShadow: "0 8px 24px rgba(15,23,42,0.05)",
+  },
+  muted: {
+    color: "#64748B",
+  },
+  small: {
+    fontSize: 13,
+    color: "#64748B",
+    lineHeight: 1.6,
+  },
+  th: {
+    textAlign: "left",
+    padding: "10px 12px",
+    borderBottom: "1px solid #E2E8F0",
+    background: "#F8FAFC",
+    fontSize: 12,
+    color: "#475569",
+    textTransform: "uppercase",
+    letterSpacing: "0.04em",
+  },
+  td: {
+    padding: "10px 12px",
+    borderBottom: "1px solid #EEF2F7",
+    fontSize: 14,
+    verticalAlign: "top",
+  },
+  formula: {
+    padding: 12,
+    borderRadius: 12,
+    background: "#F8FAFC",
+    border: "1px solid #E2E8F0",
+    overflowX: "auto",
+    color: "#0F172A",
+    fontWeight: 700,
+    fontSize: 13,
+    lineHeight: 1.6,
+  },
+};
+
+function formatWeight(value) {
+  const n = Number(value) || 0;
+  return n <= 1 ? Math.round(n * 100) : Math.round(n);
+}
+
+function getSectorLabel(key) {
+  return (
+    sectorLabels[key] ||
+    String(key || "")
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase())
+  );
+}
+
+function getDominantPillars(weights) {
+  const entries = Object.entries(weights || {}).filter(([pillar]) =>
+    ["E", "S", "G"].includes(pillar)
+  );
+
+  if (!entries.length) return "—";
+
+  const max = Math.max(...entries.map(([, value]) => formatWeight(value)));
+
+  return entries
+    .filter(([, value]) => formatWeight(value) === max)
+    .map(([pillar]) => pillarLabels[pillar] || pillar)
+    .join(" / ");
+}
+
+function getAnswerMeaning(item) {
+  if (item.description) return item.description;
+
+  switch (Number(item.score)) {
+    case 0:
+      return "No formal practice, process, policy, or evidence is currently in place.";
+    case 25:
+      return "Some actions exist, but they are informal, inconsistent, or not documented.";
+    case 50:
+      return "A process exists, but it is incomplete, partial, or not regularly reviewed.";
+    case 75:
+      return "A clear practice exists, is implemented, and has supporting documentation.";
+    case 100:
+      return "The practice is mature, monitored, and continuously improved.";
+    default:
+      return "Maturity level used by the EcoTrack scoring model.";
+  }
+}
 
 function InPageNav({ isMobile }) {
   const handleClick = (id) => {
@@ -31,65 +265,74 @@ function InPageNav({ isMobile }) {
   return (
     <nav
       className="methodology-nav"
+      aria-label="Methodology sections"
       style={{
         position: "sticky",
         top: 80,
-        zIndex: 1,
+        zIndex: 5,
         margin: "8px 0 16px",
-        background: "#F8FAFC",
+        background: "rgba(248, 250, 252, 0.92)",
+        backdropFilter: "blur(10px)",
+        border: "1px solid #E2E8F0",
         borderRadius: 9999,
-        padding: isMobile ? 8 : 12,
+        padding: isMobile ? 8 : 10,
         overflowX: "auto",
         whiteSpace: "nowrap",
+        boxShadow: "0 8px 24px rgba(15,23,42,0.06)",
       }}
     >
-      {sections.map((s) => (
+      {sections.map((section) => (
         <button
-          key={s.id}
+          key={section.id}
           type="button"
-          onClick={() => handleClick(s.id)}
+          onClick={() => handleClick(section.id)}
           className="pill-button"
           style={{
             display: "inline-flex",
             alignItems: "center",
-            padding: "6px 12px",
+            padding: "7px 12px",
             borderRadius: 9999,
             border: "1px solid #E2E8F0",
             fontSize: 12,
             marginRight: 8,
             background: "#FFFFFF",
+            color: "#0F172A",
             cursor: "pointer",
           }}
         >
-          {s.label}
+          {section.label}
         </button>
       ))}
     </nav>
   );
 }
 
-function MethodologySection({ id, title, children, isMobile, defaultOpen = true }) {
-  // desktop: open by default, mobile: closed by default
+function MethodologySection({
+  id,
+  title,
+  children,
+  isMobile,
+  defaultOpen = true,
+}) {
   const [open, setOpen] = useState(!isMobile && defaultOpen);
 
   useEffect(() => {
     setOpen(!isMobile && defaultOpen);
   }, [isMobile, defaultOpen]);
 
-  const cardStyle = {
-    padding: 16,
-    borderRadius: 16,
-    border: "1px solid #E2E8F0",
-    background: "#FFFFFF",
-    boxShadow: "0 6px 20px rgba(16,24,40,.06)",
-    scrollMarginTop: 96, // for sticky header offset when using scrollIntoView
-  };
-
   return (
-    <section id={id} className="card" style={cardStyle}>
+    <section
+      id={id}
+      className="card"
+      style={{
+        ...styles.card,
+        scrollMarginTop: 104,
+      }}
+    >
       <button
         type="button"
-        onClick={() => isMobile && setOpen((v) => !v)}
+        onClick={() => isMobile && setOpen((value) => !value)}
+        aria-expanded={open}
         style={{
           width: "100%",
           textAlign: "left",
@@ -102,7 +345,17 @@ function MethodologySection({ id, title, children, isMobile, defaultOpen = true 
           cursor: isMobile ? "pointer" : "default",
         }}
       >
-        <h2 style={{ marginBottom: isMobile ? 0 : 8 }}>{title}</h2>
+        <h2
+          style={{
+            margin: 0,
+            fontSize: isMobile ? 19 : 22,
+            letterSpacing: "-0.02em",
+            color: "#0F172A",
+          }}
+        >
+          {title}
+        </h2>
+
         {isMobile && (
           <span
             aria-hidden="true"
@@ -110,6 +363,7 @@ function MethodologySection({ id, title, children, isMobile, defaultOpen = true 
               marginLeft: 8,
               fontSize: 18,
               lineHeight: 1,
+              color: "#334155",
             }}
           >
             {open ? "▴" : "▾"}
@@ -118,9 +372,135 @@ function MethodologySection({ id, title, children, isMobile, defaultOpen = true 
       </button>
 
       {(!isMobile || open) && (
-        <div style={{ marginTop: isMobile ? 8 : 12 }}>{children}</div>
+        <div
+          style={{
+            marginTop: isMobile ? 12 : 16,
+            color: "#334155",
+            fontSize: 15,
+            lineHeight: 1.7,
+          }}
+        >
+          {children}
+        </div>
       )}
     </section>
+  );
+}
+
+function Table({ caption, headers, rows, minWidth = 560 }) {
+  return (
+    <div
+      className="table-wrapper"
+      style={{
+        marginTop: 12,
+        marginBottom: 12,
+        overflowX: "auto",
+        border: "1px solid #E2E8F0",
+        borderRadius: 14,
+      }}
+    >
+      <table
+        className="info-table"
+        style={{
+          width: "100%",
+          minWidth,
+          borderCollapse: "collapse",
+          background: "#FFFFFF",
+        }}
+      >
+        {caption && (
+          <caption
+            style={{
+              textAlign: "left",
+              fontSize: 12,
+              color: "#64748B",
+              padding: "10px 12px",
+              captionSide: "top",
+            }}
+          >
+            {caption}
+          </caption>
+        )}
+
+        <thead>
+          <tr>
+            {headers.map((header) => (
+              <th key={header} style={styles.th}>
+                {header}
+              </th>
+            ))}
+          </tr>
+        </thead>
+
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              {row.map((cell, cellIndex) => (
+                <td key={cellIndex} style={styles.td}>
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function Callout({ tone = "green", title, children }) {
+  const tones = {
+    green: {
+      border: "#BBF7D0",
+      background: "#F0FDF4",
+      accent: "#148A58",
+    },
+    orange: {
+      border: "#FED7AA",
+      background: "#FFF7ED",
+      accent: "#F97316",
+    },
+    blue: {
+      border: "#BFDBFE",
+      background: "#EFF6FF",
+      accent: "#2563EB",
+    },
+    slate: {
+      border: "#CBD5E1",
+      background: "#F8FAFC",
+      accent: "#475569",
+    },
+  };
+
+  const selected = tones[tone] || tones.green;
+
+  return (
+    <div
+      style={{
+        border: `1px solid ${selected.border}`,
+        borderLeft: `5px solid ${selected.accent}`,
+        background: selected.background,
+        padding: 14,
+        borderRadius: 14,
+        marginTop: 12,
+        marginBottom: 12,
+      }}
+    >
+      {title && (
+        <strong
+          style={{
+            display: "block",
+            marginBottom: 4,
+            color: "#0F172A",
+          }}
+        >
+          {title}
+        </strong>
+      )}
+      <div style={{ fontSize: 14, color: "#334155", lineHeight: 1.6 }}>
+        {children}
+      </div>
+    </div>
   );
 }
 
@@ -128,6 +508,24 @@ const Methodology = () => {
   const [isMobile, setIsMobile] = useState(false);
   const [showBackToTop, setShowBackToTop] = useState(false);
   const navigate = useNavigate();
+
+  const sectorWeightRows = useMemo(() => {
+    return Object.entries(SECTOR_WEIGHTS || {}).map(([sectorKey, weights]) => [
+      getSectorLabel(sectorKey),
+      `${formatWeight(weights.E)}%`,
+      `${formatWeight(weights.S)}%`,
+      `${formatWeight(weights.G)}%`,
+      getDominantPillars(weights),
+    ]);
+  }, []);
+
+  const answerRows = useMemo(() => {
+    return (ANSWER_SCALE || []).map((item) => [
+      item.label,
+      getAnswerMeaning(item),
+      item.score,
+    ]);
+  }, []);
 
   useEffect(() => {
     const handleResize = () => {
@@ -137,10 +535,11 @@ const Methodology = () => {
 
     const handleScroll = () => {
       if (typeof window === "undefined") return;
-      setShowBackToTop(window.scrollY > 400);
+      setShowBackToTop(window.scrollY > 420);
     };
 
     handleResize();
+
     window.addEventListener("resize", handleResize);
     window.addEventListener("scroll", handleScroll);
 
@@ -175,723 +574,639 @@ const Methodology = () => {
             gap: 16,
           }}
         >
-          {/* Header */}
           <header
             className="page-header"
             style={{
-              marginBottom: 8,
+              ...styles.card,
               textAlign: "left",
+              background:
+                "linear-gradient(135deg, #FFFFFF 0%, #F8FAFC 45%, #ECFDF3 100%)",
+              padding: isMobile ? 20 : 28,
             }}
           >
-            <div style={{ marginBottom: 4, display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <div
+              style={{
+                marginBottom: 12,
+                display: "flex",
+                gap: 8,
+                flexWrap: "wrap",
+              }}
+            >
               <span
                 style={{
-                  padding: "2px 8px",
+                  padding: "4px 10px",
                   borderRadius: 9999,
-                  background: "#E0F2FE",
+                  background: "#DCFCE7",
                   fontSize: 11,
-                  fontWeight: 600,
+                  fontWeight: 700,
                   textTransform: "uppercase",
-                  letterSpacing: 0.04,
-                  color: "#0F172A",
+                  letterSpacing: "0.06em",
+                  color: "#14532D",
                 }}
               >
                 Methodology
               </span>
+
               <span
                 style={{
-                  padding: "2px 8px",
+                  padding: "4px 10px",
                   borderRadius: 9999,
                   background: "#F1F5F9",
                   fontSize: 11,
-                  fontWeight: 500,
-                  color: "#0F172A",
+                  fontWeight: 600,
+                  color: "#334155",
                 }}
               >
-                E = Environmental • S = Social • G = Governance
+                Environmental • Social • Governance
               </span>
             </div>
 
             <h1
               className="page-title"
               style={{
-                fontSize: isMobile ? 24 : 28,
-                marginBottom: 4,
+                fontSize: isMobile ? 28 : 38,
+                lineHeight: 1.1,
+                marginBottom: 8,
+                letterSpacing: "-0.04em",
+                color: "#0F172A",
               }}
             >
-              EcoTrack Methodology
+              EcoTrack scoring methodology
             </h1>
+
             <p
               className="page-subtitle"
               style={{
-                maxWidth: 720,
-                fontSize: isMobile ? 14 : 16,
+                maxWidth: 780,
+                fontSize: isMobile ? 15 : 17,
+                color: "#475569",
+                lineHeight: 1.7,
+                marginBottom: 10,
               }}
             >
-              How your ESG score is calculated and what your rating really means.
+              EcoTrack converts ESG self-assessment answers into a{" "}
+              <strong>weighted ESG maturity score</strong>. This page explains how
+              answers are scored, how pillar scores are calculated, how
+              sector-specific weights are applied, and how results should be
+              interpreted.
             </p>
+
             <p
               style={{
-                marginTop: 4,
                 fontSize: 12,
                 color: "#64748B",
+                margin: 0,
               }}
             >
-              Last updated: October 2025
+              Last updated: May 2026
             </p>
           </header>
 
-          {/* At a glance summary + CTA */}
           <div
             className="card"
             style={{
-              padding: 16,
-              borderRadius: 16,
-              border: "1px solid #BBF7D0",
-              background: "#ECFDF3",
-              boxShadow: "0 4px 12px rgba(16,24,40,.04)",
-              display: "flex",
-              flexDirection: isMobile ? "column" : "row",
-              gap: 12,
-              alignItems: isMobile ? "flex-start" : "center",
+              ...styles.softCard,
+              display: "grid",
+              gridTemplateColumns: isMobile ? "1fr" : "1.6fr 1fr",
+              gap: 16,
+              alignItems: "center",
             }}
           >
-            <div style={{ flex: 1 }}>
-              <h2 style={{ fontSize: 18, marginBottom: 4 }}>Methodology at a glance</h2>
+            <div>
+              <h2
+                style={{
+                  fontSize: 20,
+                  margin: "0 0 8px",
+                  color: "#0F172A",
+                  letterSpacing: "-0.02em",
+                }}
+              >
+                Methodology at a glance
+              </h2>
+
               <ul
                 style={{
                   fontSize: 14,
                   marginLeft: 18,
-                  marginBottom: 4,
+                  marginBottom: 8,
+                  color: "#334155",
+                  lineHeight: 1.7,
                 }}
               >
-                <li>Questionnaire → 0–100 score per pillar (E, S, G).</li>
-                <li>Sector-specific weights → overall ESG score and rating band.</li>
-                <li>Benchmarks & thresholds → understand where you stand vs peers.</li>
+                <li>Each answer is converted into a 0–100 maturity score.</li>
+                <li>
+                  Environmental, Social, and Governance pillar scores are
+                  calculated separately.
+                </li>
+                <li>
+                  The final result is a weighted ESG maturity score using
+                  sector-specific pillar weights.
+                </li>
+                <li>
+                  Any pillar at or below {CRITICAL_PILLAR_THRESHOLD}% is flagged
+                  as a critical weakness.
+                </li>
               </ul>
-              <p style={{ fontSize: 12, color: "#64748B", marginTop: 4 }}>
-                Use this page as a reference when interpreting your results.
+
+              <p style={styles.small}>
+                EcoTrack is designed to support decisions and prioritisation. It
+                does not certify, audit, or guarantee ESG compliance.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => navigate("/dashboard")}
+
+            <div
               style={{
-                padding: "10px 16px",
-                borderRadius: 9999,
-                border: "none",
-                background: "#148A58",
-                color: "#FFFFFF",
-                fontWeight: 600,
-                cursor: "pointer",
-                whiteSpace: "nowrap",
-                fontSize: 14,
+                display: "grid",
+                gridTemplateColumns: "1fr",
+                gap: 8,
               }}
             >
-              View my latest results
-            </button>
+              <button
+                type="button"
+                onClick={() => navigate("/dashboard")}
+                style={{
+                  padding: "12px 16px",
+                  borderRadius: 9999,
+                  border: "none",
+                  background: "#148A58",
+                  color: "#FFFFFF",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                  fontSize: 14,
+                  boxShadow: "0 10px 24px rgba(20,138,88,0.22)",
+                }}
+              >
+                View my latest results
+              </button>
+
+              <div
+                style={{
+                  padding: 12,
+                  borderRadius: 14,
+                  background: "rgba(255,255,255,0.72)",
+                  border: "1px solid rgba(148,163,184,0.32)",
+                  fontSize: 13,
+                  color: "#475569",
+                  lineHeight: 1.5,
+                }}
+              >
+                Recommended label to use across the app:{" "}
+                <strong>Weighted ESG maturity score</strong>.
+              </div>
+            </div>
           </div>
 
-          {/* In-page navigation */}
           <InPageNav isMobile={isMobile} />
 
-          {/* 1. What EcoTrack measures */}
           <MethodologySection
             id="what-ecotrack-measures"
             title="1. What EcoTrack measures"
             isMobile={isMobile}
           >
             <p>
-              EcoTrack is a <strong>self-assessment tool</strong> that evaluates how
-              your company manages Environmental, Social and Governance (ESG)
-              topics. The questionnaire is adapted to your sector and grouped into
-              three main pillars:
+              EcoTrack is a <strong>self-assessment and decision-support tool</strong>{" "}
+              for evaluating how an organisation manages ESG topics. The
+              questionnaire is adapted by sector and organised into three ESG
+              pillars:
             </p>
+
             <ul>
               <li>
-                <strong>Environmental (E)</strong> – energy, emissions, water,
-                waste, resources.
+                <strong>Environmental (E)</strong> — energy, emissions, water,
+                waste, materials, circularity, and resource efficiency.
               </li>
               <li>
-                <strong>Social (S)</strong> – workers&apos; rights, health &amp;
-                safety, diversity &amp; inclusion, community.
+                <strong>Social (S)</strong> — workers, health and safety, diversity
+                and inclusion, human rights, training, and community-related
+                practices.
               </li>
               <li>
-                <strong>Governance (G)</strong> – policies, risk management,
-                compliance, transparency.
+                <strong>Governance (G)</strong> — policies, responsibilities, risk
+                management, ethics, compliance, transparency, and internal controls.
               </li>
             </ul>
+
             <p>
-              Each question represents a specific practice (policy, process, metric
-              or behaviour) that supports your ESG performance.
+              Each question represents a specific ESG practice. The score reflects
+              the maturity of that practice, not whether the company is formally
+              compliant with a law, standard, or reporting framework.
             </p>
+
+            <Callout tone="blue" title="Important distinction">
+              EcoTrack measures <strong>ESG maturity</strong>. It does not produce
+              an official ESG rating, certification, audit opinion, or compliance
+              statement.
+            </Callout>
           </MethodologySection>
 
-          {/* 2. From answers to numeric scores */}
           <MethodologySection
-            id="from-answers-to-scores"
-            title="2. From answers to numeric scores"
+            id="maturity-scale"
+            title="2. From answers to numeric maturity scores"
             isMobile={isMobile}
           >
             <p>
-              For every question, you choose the option that best describes your
-              current situation. EcoTrack converts each option into a{" "}
-              <strong>score between 0 and 100</strong>.
+              Each questionnaire answer is converted into a numeric score from{" "}
+              <strong>0 to 100</strong>. The scale is designed to reflect the
+              maturity of the practice: from absent or informal practices to mature,
+              documented, and continuously improved processes.
             </p>
 
-            <div
-              className="table-wrapper"
-              style={{
-                marginTop: 12,
-                marginBottom: 12,
-                overflowX: "auto",
-              }}
-            >
-              <table
-                className="info-table"
-                style={{
-                  width: "100%",
-                  minWidth: 480,
-                  borderCollapse: "collapse",
-                }}
-              >
-                <caption
-                  style={{
-                    textAlign: "left",
-                    fontSize: 12,
-                    color: "#64748B",
-                    marginBottom: 4,
-                  }}
-                >
-                  Mapping of answer options to numeric scores (0–100).
-                </caption>
-                <thead>
-                  <tr>
-                    <th>Answer option</th>
-                    <th>Meaning</th>
-                    <th>Score</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td>Not in place / No action</td>
-                    <td>No policy, process or evidence in place yet.</td>
-                    <td>0</td>
-                  </tr>
-                  <tr>
-                    <td>Initial / Informal</td>
-                    <td>
-                      Some informal practices or ad hoc actions, but not structured
-                      or documented.
-                    </td>
-                    <td>25</td>
-                  </tr>
-                  <tr>
-                    <td>Basic / Partially implemented</td>
-                    <td>
-                      Policy or process exists, applied in part of the organisation.
-                    </td>
-                    <td>50</td>
-                  </tr>
-                  <tr>
-                    <td>Advanced / Systematic</td>
-                    <td>
-                      Structured and documented practice, applied consistently and
-                      monitored.
-                    </td>
-                    <td>75</td>
-                  </tr>
-                  <tr>
-                    <td>Leading practice</td>
-                    <td>
-                      Fully integrated in strategy, measured with KPIs and regularly
-                      improved.
-                    </td>
-                    <td>100</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+            <Table
+              caption="Current answer-to-score mapping used by EcoTrack."
+              headers={["Answer option", "Meaning", "Score"]}
+              rows={answerRows}
+              minWidth={640}
+            />
 
-            <p className="note">
-              <strong>Note:</strong> In some cases, &quot;Not applicable&quot; is
-              excluded from the calculation, so it does not penalise your score.
-            </p>
+            <Callout tone="slate" title="How to interpret the scale">
+              A score of 0 does not mean the company has “failed”. It means the
+              specific practice is not currently in place. A score of 100 does not
+              mean legal compliance is guaranteed. It means the practice appears
+              mature within the EcoTrack self-assessment model.
+            </Callout>
           </MethodologySection>
 
-          {/* 3. Pillar scores (E, S, G) */}
           <MethodologySection
             id="pillar-scores"
-            title="3. Pillar scores (E, S and G)"
+            title="3. ESG pillar scores"
             isMobile={isMobile}
           >
             <p>
-              For each pillar, EcoTrack calculates a{" "}
-              <strong>simple average of all relevant questions</strong>.
-            </p>
-            <ul>
-              <li>
-                <strong>Environmental score (E)</strong> = average of all
-                Environmental questions.
-              </li>
-              <li>
-                <strong>Social score (S)</strong> = average of all Social questions.
-              </li>
-              <li>
-                <strong>Governance score (G)</strong> = average of all Governance
-                questions.
-              </li>
-            </ul>
-            <p>
-              This gives you a value between <strong>0 and 100</strong> for each
-              pillar, allowing you to see where you are stronger or weaker.
-            </p>
-          </MethodologySection>
-
-          {/* 4. Sector-specific weighting and overall ESG score */}
-          <MethodologySection
-            id="sector-weighting"
-            title="4. Sector-specific weighting and overall ESG score"
-            isMobile={isMobile}
-          >
-            <p>
-              The overall ESG score is a <strong>weighted average</strong> of the
-              three pillar scores. The weights depend on your sector and reflect the
-              relative importance of E, S and G risks and opportunities.
+              EcoTrack calculates one score for each ESG pillar. Each pillar score
+              is based on the questions assigned to that pillar in the selected
+              sector questionnaire.
             </p>
 
-            <p><strong>Overall score formula:</strong></p>
-            <pre
-              className="formula-block"
-              style={{
-                padding: 8,
-                borderRadius: 8,
-                background: "#F1F5N9".replace("N", "9"), // avoid typo, but keep style
-                overflowX: "auto",
-                color: "#0f172a",
-                fontWeight: 600,
-                fontSize: 13,
-              }}
-            >
-{`Overall ESG score = (E × wE) + (S × wS) + (G × wG)`}
-            </pre>
-
-            <ul>
-              <li>
-                <strong>E, S, G</strong> = your Environmental, Social and Governance
-                scores (0–100).
-              </li>
-              <li>
-                <strong>wE, wS, wG</strong> = weights that sum to 100% and change by
-                sector (for example, manufacturing gives more weight to
-                Environmental topics; finance may give more weight to Governance).
-              </li>
-            </ul>
-
-            <p>
-              The sector weights used in EcoTrack are defined in the application and
-              may be updated over time. The current weights are shown in the
-              details/tooltip section of your results.
-            </p>
-          </MethodologySection>
-
-          {/* 5. Rating bands */}
-          <MethodologySection
-            id="rating-bands"
-            title="5. Rating bands"
-            isMobile={isMobile}
-          >
-            <p>
-              Your overall ESG score is translated into a{" "}
-              <strong>qualitative rating</strong> to make interpretation easier.
-            </p>
-
-            <div
-              className="table-wrapper"
-              style={{
-                marginTop: 12,
-                marginBottom: 12,
-                overflowX: "auto",
-              }}
-            >
-              <table
-                className="info-table"
-                style={{
-                  width: "100%",
-                  minWidth: 520,
-                  borderCollapse: "collapse",
-                }}
-              >
-                <caption
-                  style={{
-                    textAlign: "left",
-                    fontSize: 12,
-                    color: "#64748B",
-                    marginBottom: 4,
-                  }}
-                >
-                  Rating bands used to interpret the overall ESG score.
-                </caption>
-                <thead>
-                  <tr>
-                    <th>Score range</th>
-                    <th>Rating</th>
-                    <th>Interpretation</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td>0 – 20</td>
-                    <td>Critical</td>
-                    <td>
-                      ESG management is largely absent. High exposure to regulatory,
-                      market and reputational risks.
-                    </td>
-                  </tr>
-                  <tr>
-                    <td>21 – 40</td>
-                    <td>High risk</td>
-                    <td>
-                      Some initiatives exist but are fragmented and not integrated
-                      in strategy.
-                    </td>
-                  </tr>
-                  <tr>
-                    <td>41 – 60</td>
-                    <td>Basic</td>
-                    <td>
-                      ESG foundations are in place but coverage and implementation
-                      are still partial.
-                    </td>
-                  </tr>
-                  <tr>
-                    <td>61 – 80</td>
-                    <td>Advanced</td>
-                    <td>
-                      Structured ESG approach with clear policies, metrics and
-                      responsibilities.
-                    </td>
-                  </tr>
-                  <tr>
-                    <td>81 – 100</td>
-                    <td>Leader</td>
-                    <td>
-                      ESG is embedded in strategy and operations with continuous
-                      improvement and innovation.
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+            <div style={styles.formula}>
+              Environmental score = average score of Environmental questions
+              <br />
+              Social score = average score of Social questions
+              <br />
+              Governance score = average score of Governance questions
             </div>
 
-            <p className="note">
-              <strong>Important:</strong> EcoTrack is not a certification, but a{" "}
-              decision-support tool to identify gaps and prioritise actions.
+            <p>
+              This creates three separate values between <strong>0 and 100</strong>.
+              These pillar scores are important because they show whether the
+              organisation is balanced or whether one ESG area is materially weaker
+              than the others.
             </p>
+
+            <Callout tone="orange" title="Why pillar scores matter">
+              A single final score can hide a serious weakness. For example, a
+              company may perform reasonably well on Environmental topics but still
+              have critical Governance gaps. EcoTrack therefore evaluates each
+              pillar separately before interpreting the final result.
+            </Callout>
           </MethodologySection>
 
-          {/* 6. Benchmarks and critical thresholds */}
+          <MethodologySection
+            id="sector-weighting"
+            title="4. Sector-specific weighting and weighted ESG maturity score"
+            isMobile={isMobile}
+          >
+            <p>
+              The final result is not a simple average of all questions. EcoTrack
+              first calculates the Environmental, Social, and Governance pillar
+              scores, then combines them using{" "}
+              <strong>sector-specific ESG weights</strong>.
+            </p>
+
+            <p>
+              This is necessary because ESG priorities differ by sector. For
+              example, Environmental issues are usually more material in
+              manufacturing or transportation, while Governance may carry more
+              weight in finance.
+            </p>
+
+            <p>
+              <strong>Formula:</strong>
+            </p>
+
+            <div style={styles.formula}>
+              Weighted ESG maturity score = ((E × wE) + (S × wS) + (G × wG)) /
+              100
+            </div>
+
+            <ul>
+              <li>
+                <strong>E, S, G</strong> = Environmental, Social, and Governance
+                pillar scores.
+              </li>
+              <li>
+                <strong>wE, wS, wG</strong> = sector-specific percentage weights.
+              </li>
+              <li>The three weights always sum to 100%.</li>
+            </ul>
+
+            <Table
+              caption="Current sector-specific ESG pillar weights."
+              headers={[
+                "Sector",
+                "Environmental",
+                "Social",
+                "Governance",
+                "Highest emphasis",
+              ]}
+              rows={sectorWeightRows}
+              minWidth={760}
+            />
+
+            <Callout tone="green" title="Terminology used in EcoTrack">
+              The correct label is{" "}
+              <strong>Weighted ESG maturity score</strong>. Avoid calling it a
+              compliance score, certification score, sustainability rating, or audit
+              result.
+            </Callout>
+          </MethodologySection>
+
+          <MethodologySection
+            id="maturity-bands"
+            title="5. Maturity bands"
+            isMobile={isMobile}
+          >
+            <p>
+              To make results easier to interpret, EcoTrack translates the weighted
+              ESG maturity score into a qualitative maturity band.
+            </p>
+
+            <Table
+              caption="Interpretation bands for the weighted ESG maturity score."
+              headers={["Score range", "Band", "Interpretation"]}
+              rows={maturityBands.map((band) => [
+                band.range,
+                band.label,
+                band.meaning,
+              ])}
+              minWidth={700}
+            />
+
+            <Callout tone="orange" title="Critical pillar rule comes first">
+              If any ESG pillar scores {CRITICAL_PILLAR_THRESHOLD}% or below,
+              EcoTrack flags a critical weakness. In that case, the final score
+              should not be interpreted as balanced ESG performance, even if the
+              weighted average appears acceptable.
+            </Callout>
+          </MethodologySection>
+
           <MethodologySection
             id="benchmarks-thresholds"
             title="6. Benchmarks and critical thresholds"
             isMobile={isMobile}
           >
             <p>
-              On the results page, your scores are also compared with{" "}
-              <strong>sector benchmarks</strong> (shown for example as{" "}
-              <em>peer median</em> or <em>sector baseline</em>) to give you a sense
-              of how you perform versus peers.
+              EcoTrack may compare your pillar scores against{" "}
+              <strong>indicative sector baselines</strong>. These baselines are
+              fixed reference values defined inside the EcoTrack model. They are
+              designed to help users understand whether their maturity appears above,
+              close to, or below a typical sector reference point.
             </p>
+
             <p>
-              EcoTrack also applies <strong>critical thresholds</strong>. For
-              example, if any pillar (E, S, or G) is{" "}
-              <strong>20% or lower</strong>:
+              EcoTrack also applies a critical threshold. If any pillar — E, S, or G
+              — scores <strong>{CRITICAL_PILLAR_THRESHOLD}% or below</strong>, the
+              result is treated as a critical weakness.
             </p>
+
             <ul>
-              <li>the overall score may be hidden, and</li>
+              <li>The overall score may be hidden or visually de-emphasised.</li>
+              <li>The user is encouraged to address the weak pillar first.</li>
               <li>
-                you see a message encouraging you to review your ESG strategy before
-                focusing on the aggregated score.
+                The result should be interpreted as a warning, not as a balanced ESG
+                maturity profile.
               </li>
             </ul>
-            <p>
-              This prevents a single strong area from masking severe weaknesses in
-              another pillar (for example, good Environmental performance but
-              critical Governance issues).
-            </p>
+
+            <Callout tone="blue" title="Why this rule exists">
+              A company with one very weak ESG pillar can face significant risk even
+              if the other two pillars are stronger. The critical threshold prevents
+              the weighted average from masking serious gaps.
+            </Callout>
           </MethodologySection>
 
-          {/* 7. How to use the results */}
           <MethodologySection
             id="using-results"
             title="7. How to use EcoTrack results"
             isMobile={isMobile}
           >
+            <p>
+              EcoTrack results should be used as a structured starting point for ESG
+              improvement. The goal is not to “chase a score”, but to identify weak
+              practices and prioritise practical action.
+            </p>
+
             <ul>
               <li>
-                Use the <strong>pillar breakdown</strong> to quickly see where your
-                main gaps are.
+                Use the <strong>pillar breakdown</strong> to identify your weakest
+                ESG area.
               </li>
               <li>
-                Look at the <strong>question-level results</strong> to identify
-                concrete actions.
+                Review <strong>question-level answers</strong> to understand which
+                practices are missing, informal, or incomplete.
               </li>
               <li>
-                Combine the score with <strong>tailored suggestions</strong> to
-                build your improvement roadmap.
+                Use the <strong>suggestions</strong> as improvement prompts, not as
+                legal or technical instructions.
               </li>
               <li>
-                Repeat the assessment periodically to track{" "}
-                <strong>progress over time</strong>.
+                Repeat the assessment periodically to track progress over time.
               </li>
             </ul>
-            <p style={{ fontSize: 13, color: "#64748B", marginTop: 4 }}>
-              Tip: after updating a few key practices, run the assessment again to
-              see how much your ESG maturity has improved.
-            </p>
+
+            <Callout tone="slate" title="Recommended review cycle">
+              For most SMEs, repeating the assessment every 3–6 months is reasonable,
+              especially after implementing new policies, procedures, data systems,
+              training, or governance controls.
+            </Callout>
           </MethodologySection>
 
-          {/* 8. How benchmarking is calculated */}
           <MethodologySection
             id="benchmarking-method"
             title="8. How benchmarking is calculated"
             isMobile={isMobile}
           >
             <p>
-              Benchmarking in EcoTrack means comparing your ESG performance to{" "}
-              <strong>fixed baseline values defined for your sector</strong>. These
-              baselines are stored directly in the application (for each sector and
-              for each pillar: E, S and G) and used consistently across all
-              assessments.
+              Benchmarking in EcoTrack is based on{" "}
+              <strong>fixed sector baseline values</strong>. These values are stored
+              inside the application for each sector and each ESG pillar.
             </p>
-            <p>For each sector, EcoTrack defines three baselines:</p>
+
+            <p>For each sector, EcoTrack defines:</p>
+
             <ul>
-              <li>
-                a <strong>baseline Environmental score</strong>,
-              </li>
-              <li>
-                a <strong>baseline Social score</strong>, and
-              </li>
-              <li>
-                a <strong>baseline Governance score</strong>.
-              </li>
+              <li>a baseline Environmental score,</li>
+              <li>a baseline Social score, and</li>
+              <li>a baseline Governance score.</li>
             </ul>
+
             <p>
-              These values represent an <strong>indicative average maturity</strong>{" "}
-              for a typical SME in that industry, based on observed ESG practices,
-              common weaknesses and typical regulatory expectations. They are not
-              pulled in real time from external databases.
+              The gap is calculated separately for each pillar:
             </p>
+
+            <div style={styles.formula}>
+              Gap per pillar = Your pillar score − Sector baseline for the same
+              pillar
+            </div>
+
             <p>
-              On the results page, EcoTrack calculates the gap for each pillar as:
+              The result can then be interpreted as above, close to, or below the
+              sector baseline.
             </p>
-            <pre
-              className="formula-block"
-              style={{
-                padding: 8,
-                borderRadius: 8,
-                background: "#F1F5F9",
-                overflowX: "auto",
-                color: "#0f172a",
-                fontWeight: 600,
-                fontSize: 13,
-              }}
-            >
-{`Gap (per pillar) = Your pillar score – Sector baseline (same pillar)`}
-            </pre>
-            <p>
-              This gap is then interpreted and visualised (for example, in the peer
-              comparison chart) as:
-            </p>
-            <ul>
-              <li>
-                <strong>Above benchmark</strong> – your score is higher than the
-                sector baseline.
-              </li>
-              <li>
-                <strong>In line with benchmark</strong> – your score is close to the
-                baseline.
-              </li>
-              <li>
-                <strong>Below benchmark</strong> – your score is lower than the
-                typical value for your sector.
-              </li>
-            </ul>
-            <p>
-              The objective is not to provide a formal market ranking, but to give a{" "}
-              <strong>clear, consistent reference point</strong> to orient your ESG
-              priorities and understand whether your performance is lagging or
-              leading compared to a typical peer.
-            </p>
+
+            <Callout tone="orange" title="Benchmarking limitation">
+              EcoTrack benchmarks are indicative internal baselines. They are not
+              live market averages, official industry statistics, external ESG
+              ratings, or verified peer rankings.
+            </Callout>
           </MethodologySection>
 
-          {/* 9. FAQ */}
-          <MethodologySection
-            id="faq"
-            title="9. FAQ"
-            isMobile={isMobile}
-          >
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <MethodologySection id="faq" title="9. FAQ" isMobile={isMobile}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
               <div>
-                <h3 style={{ fontSize: 15, marginBottom: 4 }}>
+                <h3 style={{ fontSize: 16, marginBottom: 4 }}>
                   1. Is EcoTrack an official ESG rating or certification?
                 </h3>
                 <p style={{ fontSize: 14 }}>
-                  No. EcoTrack is a <strong>self-assessment tool</strong>, not a third-party rating
-                  or certification. It helps you understand your ESG maturity and identify areas
-                  for improvement.
+                  No. EcoTrack is a self-assessment and decision-support tool. It
+                  helps identify ESG maturity, gaps, and improvement priorities, but
+                  it does not provide third-party certification or an official ESG
+                  rating.
                 </p>
               </div>
 
               <div>
-                <h3 style={{ fontSize: 15, marginBottom: 4 }}>
-                  2. Can EcoTrack be used for CSRD reporting?
+                <h3 style={{ fontSize: 16, marginBottom: 4 }}>
+                  2. Can EcoTrack be used for CSRD or ESRS reporting?
                 </h3>
                 <p style={{ fontSize: 14 }}>
-                  EcoTrack supports <strong>awareness and readiness</strong>, but it is{" "}
-                  <strong>not</strong> a substitute for CSRD-compliant reporting, external
-                  assurance or professional audit. It highlights gaps and priorities, but does not
-                  generate a CSRD-aligned sustainability statement.
+                  EcoTrack can support awareness, readiness, and internal gap
+                  analysis. It is not a substitute for CSRD/ESRS reporting, double
+                  materiality assessment, external assurance, legal advice, or a
+                  formal sustainability statement.
                 </p>
               </div>
 
               <div>
-                <h3 style={{ fontSize: 15, marginBottom: 4 }}>
-                  3. How often should my company repeat the assessment?
+                <h3 style={{ fontSize: 16, marginBottom: 4 }}>
+                  3. Are my answers verified?
                 </h3>
                 <p style={{ fontSize: 14 }}>
-                  Most SMEs repeat the assessment every <strong>3–6 months</strong> or after major
-                  improvements (policies, data systems, governance updates). EcoTrack is designed
-                  to track your progress over time.
+                  No. EcoTrack does not verify evidence or documentation. Results
+                  depend on the accuracy and completeness of the information provided
+                  by the user.
                 </p>
               </div>
 
               <div>
-                <h3 style={{ fontSize: 15, marginBottom: 4 }}>
-                  4. Are my answers verified or audited?
+                <h3 style={{ fontSize: 16, marginBottom: 4 }}>
+                  4. Why is the final score sometimes hidden?
                 </h3>
                 <p style={{ fontSize: 14 }}>
-                  No. EcoTrack does <strong>not</strong> verify evidence or documentation. Your
-                  results depend entirely on the <strong>accuracy and honesty</strong> of the
-                  information you provide.
+                  If any ESG pillar scores {CRITICAL_PILLAR_THRESHOLD}% or below,
+                  EcoTrack may hide or de-emphasise the final weighted score. This
+                  prevents one strong pillar from masking a critical weakness in
+                  another pillar.
                 </p>
               </div>
 
               <div>
-                <h3 style={{ fontSize: 15, marginBottom: 4 }}>
-                  5. Can multiple people in my company take the assessment?
+                <h3 style={{ fontSize: 16, marginBottom: 4 }}>
+                  5. Where do the benchmark values come from?
                 </h3>
                 <p style={{ fontSize: 14 }}>
-                  Yes. Anyone with access to your company account can take the assessment. Results
-                  appear chronologically on your dashboard so you can track company-wide progress.
+                  Benchmark values are indicative sector baselines defined inside the
+                  EcoTrack model. They are not real-time peer data, public statistics,
+                  or external ESG ratings.
                 </p>
               </div>
 
               <div>
-                <h3 style={{ fontSize: 15, marginBottom: 4 }}>
-                  6. Why is my overall score sometimes hidden?
+                <h3 style={{ fontSize: 16, marginBottom: 4 }}>
+                  6. Can multiple assessments be compared over time?
                 </h3>
                 <p style={{ fontSize: 14 }}>
-                  If any pillar (E, S or G) scores <strong>20% or below</strong>, EcoTrack may hide
-                  the overall score to prevent a single strong area from masking{" "}
-                  <strong>critical weaknesses</strong>. This ensures a realistic understanding of
-                  ESG risk exposure.
+                  Yes, but comparisons should be interpreted carefully. If scoring
+                  rules, sector weights, benchmark values, or questionnaire content
+                  change over time, older and newer assessments may not be perfectly
+                  comparable.
                 </p>
               </div>
 
               <div>
-                <h3 style={{ fontSize: 15, marginBottom: 4 }}>
-                  7. Where do the benchmark values come from?
+                <h3 style={{ fontSize: 16, marginBottom: 4 }}>
+                  7. Who can I contact for questions?
                 </h3>
                 <p style={{ fontSize: 14 }}>
-                  Benchmark values are <strong>sector baselines defined inside the EcoTrack
-                  model</strong>, based on typical SME practices and expected ESG maturity. They
-                  are <strong>indicative</strong>, not real-time industry averages or external
-                  ratings.
-                </p>
-              </div>
-
-              <div>
-                <h3 style={{ fontSize: 15, marginBottom: 4 }}>
-                  8. What if I have a question that is not answered here?
-                </h3>
-                <p style={{ fontSize: 14 }}>
-                  You can always reach us directly at:{" "}
+                  You can contact us at{" "}
                   <a href="mailto:info@viridisconsultancy.com">
                     info@viridisconsultancy.com
                   </a>
-                  . We&apos;ll assist you personally.
+                  .
                 </p>
               </div>
             </div>
           </MethodologySection>
 
-          {/* 10. Disclaimer & limitations */}
           <MethodologySection
             id="disclaimer"
-            title="10. Disclaimer & limitations"
+            title="10. Disclaimer and limitations"
             isMobile={isMobile}
           >
-            <div
-              style={{
-                borderLeft: "4px solid #F97316",
-                background: "#FFF7ED",
-                padding: 12,
-                borderRadius: 8,
-                marginBottom: 12,
-                fontSize: 14,
-              }}
-            >
-              <strong>Important:</strong> EcoTrack is a self-assessment tool and not
-              a formal ESG rating or certification.
-            </div>
+            <Callout tone="orange" title="Important">
+              EcoTrack is a self-assessment and decision-support tool. It is not an
+              audit, certification, assurance service, legal opinion, financial
+              advice, or compliance guarantee.
+            </Callout>
 
             <p>
-              EcoTrack is a <strong>self-assessment and awareness tool</strong>. It
-              is designed to help you understand your ESG maturity level, identify
-              gaps and structure an improvement roadmap.
+              EcoTrack is designed to help users understand ESG maturity, identify
+              gaps, and structure improvement priorities. It should be used as a
+              practical internal reference, not as a formal external validation of
+              ESG performance.
             </p>
+
             <ul>
               <li>
                 <strong>No audit or assurance:</strong> EcoTrack does not replace an
-                independent ESG audit, financial due diligence or legal advice.
+                independent ESG audit, financial due diligence, legal review, or
+                assurance engagement.
               </li>
               <li>
-                <strong>User responsibility:</strong> All results depend on the
-                accuracy and completeness of the information you provide. EcoTrack
-                does not verify your answers or supporting evidence.
+                <strong>No compliance guarantee:</strong> EcoTrack does not
+                guarantee compliance with CSRD, ESRS, EU Taxonomy, national laws, or
+                sector-specific regulations.
               </li>
               <li>
-                <strong>Indicative benchmarks:</strong> Sector baselines and peer
-                comparisons are indicative only. They are defined within the tool
-                and may be refined over time. They are{" "}
-                <strong>not official ESG ratings</strong>, nor do they represent an
-                endorsement or certification.
+                <strong>User responsibility:</strong> Results depend on the accuracy,
+                completeness, and honesty of the answers provided.
               </li>
               <li>
-                <strong>Updates over time:</strong> Scoring rules, weights and
-                benchmark values may change as ESG standards and regulations evolve.
-                Assessments taken at different times may therefore not be directly
-                comparable.
+                <strong>Indicative benchmarks:</strong> Sector baselines are internal
+                reference values and do not represent official industry averages or
+                verified peer performance.
               </li>
               <li>
-                <strong>Use of results:</strong> EcoTrack and Viridis Consulting are
-                not liable for business, investment or strategic decisions taken
-                solely on the basis of this assessment. Always combine EcoTrack
-                results with professional advice and internal analysis.
+                <strong>Model updates:</strong> Scoring rules, sector weights,
+                benchmark values, questions, and suggestions may change as the tool
+                evolves.
+              </li>
+              <li>
+                <strong>Use of results:</strong> Business, investment, reporting, or
+                compliance decisions should not be made solely on the basis of
+                EcoTrack results.
               </li>
             </ul>
+
             <p>
-              By using EcoTrack, you acknowledge these limitations and accept that
-              the tool is intended as a{" "}
-              <strong>decision-support and learning instrument</strong>, not as a
-              formal ESG rating or certification.
+              By using EcoTrack, users acknowledge that results are indicative and
+              intended to support learning, prioritisation, and internal ESG
+              improvement planning.
             </p>
           </MethodologySection>
         </div>
       </main>
 
-      {/* Back to top button */}
       {showBackToTop && (
         <button
           type="button"
@@ -900,14 +1215,16 @@ const Methodology = () => {
             position: "fixed",
             right: 16,
             bottom: 16,
-            padding: "8px 12px",
+            padding: "9px 13px",
             borderRadius: 9999,
-            border: "1px solid #CBD5F5",
+            border: "1px solid #CBD5E1",
             background: "#FFFFFF",
-            boxShadow: "0 8px 20px rgba(15,23,42,0.18)",
+            boxShadow: "0 10px 24px rgba(15,23,42,0.18)",
             fontSize: 12,
             cursor: "pointer",
             zIndex: 20,
+            color: "#0F172A",
+            fontWeight: 600,
           }}
         >
           ↑ Back to top

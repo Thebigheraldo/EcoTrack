@@ -1,4 +1,3 @@
-// src/pages/DetailsPage.js
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
@@ -17,6 +16,7 @@ import { useUserSettings } from "../hooks/useUserSettings";
 import { auth, db } from "../firebase";
 import { doc, getDoc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { getQuestionsForSector } from "../utils/questions";
+import { getTailoredSuggestions } from "../utils/suggestionEngine";
 import InfoTooltip from "../components/InfoTooltip";
 
 /* ---------------- Benchmarks aligned to sector labels ---------------- */
@@ -31,7 +31,7 @@ const benchmarkData = {
   Furniture: { Environmental: 61, Social: 59, Governance: 47 },
 };
 
-/* ---------------- Sector weights (moved OUTSIDE component) ---------------- */
+/* ---------------- Sector weights ---------------- */
 const SECTOR_WEIGHTS = {
   Manufacturing: { Environmental: 0.5, Social: 0.3, Governance: 0.2 },
   Finance: { Environmental: 0.2, Social: 0.3, Governance: 0.5 },
@@ -42,6 +42,10 @@ const SECTOR_WEIGHTS = {
   "Textile/Fashion": { Environmental: 0.4, Social: 0.4, Governance: 0.2 },
   Furniture: { Environmental: 0.4, Social: 0.4, Governance: 0.2 },
 };
+
+const CRITICAL_PILLAR_THRESHOLD = 20;
+const WEAK_PILLAR_THRESHOLD = 40;
+const IMBALANCE_GAP_THRESHOLD = 35;
 
 const DETAILS_TRANSLATIONS = {
   en: {
@@ -63,14 +67,21 @@ const DETAILS_TRANSLATIONS = {
     seeSuggestions: "See Suggestions",
     goDashboard: "Go to Dashboard",
     openCriticalReview: "Open Critical Review",
-    criticalAlertTitle: "Critical ESG Alert",
-    criticalAlertBodyPrefix: "Due to an extremely low score in the",
-    criticalAlertBodySuffix:
-      "pillar, we strongly suggest re-evaluating your overall ESG strategy.",
+    criticalAlertTitle: "Critical ESG gap detected",
     close: "Close",
     whatThisMeansTitle: "What this means",
     whatThisMeansIntro:
       "Short interpretation of your score, benchmark position, and where to start.",
+    resultLabel: "Result",
+    appliedWeightsLabel: "Applied Weights",
+    overallHiddenTitle: "Overall score not displayed",
+    overallHiddenBody:
+      "EcoTrack has detected one or more critical ESG gaps. The overall score is hidden because a weighted average could give a misleading view of ESG maturity.",
+    criticalPillarsLabel: "Critical pillar(s)",
+    criticalNextStep:
+      "Review the critical pillar first, define corrective actions, and repeat the assessment after implementation.",
+    criticalAlertBody:
+      "One or more ESG pillars scored 20% or below. EcoTrack does not display the overall score in this case because a weighted average could hide a serious weakness.",
   },
   it: {
     title: "Risultati della valutazione ESG",
@@ -91,93 +102,249 @@ const DETAILS_TRANSLATIONS = {
     seeSuggestions: "Vedi suggerimenti",
     goDashboard: "Vai alla dashboard",
     openCriticalReview: "Apri analisi critica",
-    criticalAlertTitle: "Avviso ESG critico",
-    criticalAlertBodyPrefix:
-      "A causa di un punteggio estremamente basso nel pilastro",
-    criticalAlertBodySuffix:
-      "consigliamo vivamente di rivedere la tua strategia ESG complessiva.",
+    criticalAlertTitle: "Gap ESG critico rilevato",
     close: "Chiudi",
     whatThisMeansTitle: "Cosa significa",
     whatThisMeansIntro:
       "Una breve interpretazione del tuo punteggio, della posizione rispetto al benchmark e da dove partire.",
+    resultLabel: "Risultato",
+    appliedWeightsLabel: "Pesi applicati",
+    overallHiddenTitle: "Punteggio complessivo non mostrato",
+    overallHiddenBody:
+      "EcoTrack ha rilevato uno o più gap ESG critici. Il punteggio complessivo viene nascosto perché una media ponderata potrebbe dare una visione fuorviante della maturità ESG.",
+    criticalPillarsLabel: "Pilastro/i critico/i",
+    criticalNextStep:
+      "Rivedi prima il pilastro critico, definisci azioni correttive e ripeti la valutazione dopo l’implementazione.",
+    criticalAlertBody:
+      "Uno o più pilastri ESG hanno ottenuto un punteggio pari o inferiore al 20%. In questo caso EcoTrack non mostra il punteggio complessivo perché una media ponderata potrebbe nascondere una debolezza seria.",
   },
 };
 
-/* ---------------- Same normalization logic used in Dashboard ---------------- */
+/* ---------------- Critical score logic ---------------- */
+function isValidNumber(value) {
+  return typeof value === "number" && !Number.isNaN(value);
+}
+
+function evaluateCriticalScore(pillarScores = {}) {
+  const scores = {
+    Environmental: pillarScores.Environmental,
+    Social: pillarScores.Social,
+    Governance: pillarScores.Governance,
+  };
+
+  const validEntries = Object.entries(scores).filter(([, score]) =>
+    isValidNumber(score)
+  );
+
+  if (validEntries.length < 3) {
+    return {
+      level: "incomplete",
+      hideOverallScore: true,
+      criticalPillars: [],
+      weakPillars: [],
+      imbalanceGap: null,
+    };
+  }
+
+  const criticalPillars = validEntries
+    .filter(([, score]) => score <= CRITICAL_PILLAR_THRESHOLD)
+    .map(([pillar]) => pillar);
+
+  const weakPillars = validEntries
+    .filter(
+      ([, score]) =>
+        score > CRITICAL_PILLAR_THRESHOLD && score <= WEAK_PILLAR_THRESHOLD
+    )
+    .map(([pillar]) => pillar);
+
+  const values = validEntries.map(([, score]) => score);
+  const highestScore = Math.max(...values);
+  const lowestScore = Math.min(...values);
+  const imbalanceGap = highestScore - lowestScore;
+
+  if (criticalPillars.length > 0) {
+    return {
+      level: "critical",
+      hideOverallScore: true,
+      criticalPillars,
+      weakPillars,
+      imbalanceGap,
+    };
+  }
+
+  if (weakPillars.length > 0) {
+    return {
+      level: "weak",
+      hideOverallScore: false,
+      criticalPillars: [],
+      weakPillars,
+      imbalanceGap,
+    };
+  }
+
+  if (imbalanceGap >= IMBALANCE_GAP_THRESHOLD) {
+    return {
+      level: "imbalanced",
+      hideOverallScore: false,
+      criticalPillars: [],
+      weakPillars: [],
+      imbalanceGap,
+    };
+  }
+
+  return {
+    level: "normal",
+    hideOverallScore: false,
+    criticalPillars: [],
+    weakPillars: [],
+    imbalanceGap,
+  };
+}
+
+function fullPillarToCode(pillar) {
+  if (pillar === "Environmental") return "E";
+  if (pillar === "Social") return "S";
+  if (pillar === "Governance") return "G";
+  return pillar;
+}
+
+/* ---------------- answer normalization ---------------- */
+function scoreToLabel(score) {
+  if (score === 0) return "Not in place";
+  if (score === 1) return "Informal / ad hoc";
+  if (score === 2) return "Partially structured";
+  if (score === 3) return "Implemented & documented";
+  if (score === 4) return "Advanced / best practice";
+  return "Not answered";
+}
+
 function normalizeAnswer(val) {
   if (val && typeof val === "object" && typeof val.score === "number") {
     let s = val.score;
     if (s < 0) s = 0;
     if (s > 4) s = 4;
-    const label =
-      val.label ||
-      (s === 0
-        ? "Not in place"
-        : s === 1
-        ? "Informal / ad hoc"
-        : s === 2
-        ? "Partially structured"
-        : s === 3
-        ? "Implemented & documented"
-        : "Advanced / best practice");
-    return { score: s, label };
+    return {
+      score: s,
+      label: val.label || val.answerLabel || scoreToLabel(s),
+    };
   }
+
+  if (val && typeof val === "object" && typeof val.answerScore === "number") {
+    let s = val.answerScore;
+    if (s < 0) s = 0;
+    if (s > 4) s = 4;
+    return {
+      score: s,
+      label: val.answerLabel || val.label || scoreToLabel(s),
+    };
+  }
+
+  if (typeof val === "number") {
+    let s = val;
+    if (s < 0) s = 0;
+    if (s > 4) s = 4;
+    return { score: s, label: scoreToLabel(s) };
+  }
+
   if (val === "Yes") return { score: 4, label: "Yes (fully in place)" };
   if (val === "No") return { score: 0, label: "No (not in place)" };
   if (val === "Unknown") return { score: 0, label: "Unknown" };
-  if (val === "Partial") return { score: 2, label: "Partially implemented" };
+  if (val === "Partial") return { score: 2, label: "Partially structured" };
+
+  if (typeof val === "string") {
+    const lower = val.trim().toLowerCase();
+
+    if (lower === "not in place") {
+      return { score: 0, label: "Not in place" };
+    }
+
+    if (lower === "informal / ad hoc" || lower === "informal/ad hoc") {
+      return { score: 1, label: "Informal / ad hoc" };
+    }
+
+    if (lower === "partially structured") {
+      return { score: 2, label: "Partially structured" };
+    }
+
+    if (
+      lower === "implemented & documented" ||
+      lower === "implemented and documented"
+    ) {
+      return { score: 3, label: "Implemented & documented" };
+    }
+
+    if (
+      lower === "advanced / best practice" ||
+      lower === "advanced/best practice"
+    ) {
+      return { score: 4, label: "Advanced / best practice" };
+    }
+  }
+
   return null;
 }
 
-/* ---------------- Build answers[] for this page from a Firestore answers map ---------------- */
+/* ---------------- canonical answers map from any incoming shape ---------------- */
+function coerceAnswersMapForDetails(sector, incomingAnswers) {
+  const questions = getQuestionsForSector(sector || "") || [];
+
+  if (!incomingAnswers) return {};
+
+  if (!Array.isArray(incomingAnswers) && typeof incomingAnswers === "object") {
+    return incomingAnswers;
+  }
+
+  if (Array.isArray(incomingAnswers)) {
+    const out = {};
+
+    incomingAnswers.forEach((item, idx) => {
+      const q = questions[idx];
+      if (!q) return;
+
+      const normalized =
+        normalizeAnswer(item) ||
+        normalizeAnswer(item?.answer) ||
+        normalizeAnswer({
+          score: item?.score ?? item?.answerScore ?? item?.numericScore,
+          label: item?.answerLabel ?? item?.label,
+        });
+
+      if (normalized) {
+        out[q.id] = normalized;
+      }
+    });
+
+    return out;
+  }
+
+  return {};
+}
+
+/* ---------------- array used for score calculations / current page ---------------- */
 function buildAnswersArrayFromMap(sector, rawAnswersMap) {
   const qs = getQuestionsForSector(sector || "") || [];
   const raw = rawAnswersMap || {};
+
   return qs.map((q) => {
     const norm = normalizeAnswer(raw[q.id]);
     const score = norm ? norm.score : 0;
 
     const pillar = q.pillar || q.esg || q.category;
+
     let category = "Environmental";
     if (pillar === "S" || pillar === "Social") category = "Social";
-    else if (pillar === "G" || pillar === "Governance") category = "Governance";
+    else if (pillar === "G" || pillar === "Governance") {
+      category = "Governance";
+    }
 
     return {
+      questionId: q.id,
+      questionText: q.text,
       question: { category },
       score,
       answerLabel: norm ? norm.label : "Not answered",
     };
   });
-}
-
-/* ---------------- Accept multiple possible shapes coming from route state ---------------- */
-function coerceAnswersForDetails(sector, stateAnswers) {
-  if (!stateAnswers) return [];
-
-  // If it's already in the DetailsPage expected shape:
-  if (Array.isArray(stateAnswers)) {
-    const looksLikeDetails =
-      stateAnswers.length === 0 ||
-      stateAnswers.every(
-        (a) =>
-          a &&
-          typeof a === "object" &&
-          (typeof a.score === "number" ||
-            typeof a.answerScore === "number" ||
-            typeof a.numericScore === "number") &&
-          a.question &&
-          typeof a.question === "object"
-      );
-    if (looksLikeDetails) return stateAnswers;
-    return [];
-  }
-
-  // If it's a Firestore-style answers map { "QID": {label, score} }:
-  if (typeof stateAnswers === "object") {
-    return buildAnswersArrayFromMap(sector, stateAnswers);
-  }
-
-  return [];
 }
 
 export default function DetailsPage() {
@@ -190,21 +357,24 @@ export default function DetailsPage() {
 
   const initialRef = useRef({
     sector: location.state?.sector || "",
-    answers: location.state?.answers ?? null,
+    answers: location.state?.answers ?? location.state?.answersMap ?? null,
   });
+
+  const seededSector = initialRef.current.sector || "";
+  const seededAnswersRaw = initialRef.current.answers;
+
+  const seededAnswersMap = useMemo(() => {
+    return coerceAnswersMapForDetails(seededSector, seededAnswersRaw);
+  }, [seededSector, seededAnswersRaw]);
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
 
-  const [sector, setSector] = useState(initialRef.current.sector || "");
-  const [answers, setAnswers] = useState(() =>
-    coerceAnswersForDetails(initialRef.current.sector, initialRef.current.answers)
-  );
+  const [sector, setSector] = useState(seededSector);
+  const [answersMap, setAnswersMap] = useState(seededAnswersMap);
+  const [profile, setProfile] = useState({});
 
   const [showModal, setShowModal] = useState(false);
-  const [criticalPillar, setCriticalPillar] = useState(null);
-
-  // canonical stored scores (0..100): { overallScore, envScore, socScore, govScore }
   const [storedScores, setStoredScores] = useState(null);
 
   const benchmarkSubtitle = useMemo(() => {
@@ -213,13 +383,27 @@ export default function DetailsPage() {
       : benchmarkRegion === "global"
       ? t.benchmarkSubtitleGlobal
       : t.benchmarkSubtitleEU;
-  }, [benchmarkRegion, t.benchmarkSubtitleEU, t.benchmarkSubtitleGlobal, t.benchmarkSubtitleIT]);
+  }, [
+    benchmarkRegion,
+    t.benchmarkSubtitleEU,
+    t.benchmarkSubtitleGlobal,
+    t.benchmarkSubtitleIT,
+  ]);
 
   const categoryLabelMap = useMemo(
     () => ({
       Environmental: t.envLabel,
       Social: t.socLabel,
       Governance: t.govLabel,
+    }),
+    [t.envLabel, t.socLabel, t.govLabel]
+  );
+
+  const pillarCodeLabelMap = useMemo(
+    () => ({
+      E: t.envLabel,
+      S: t.socLabel,
+      G: t.govLabel,
     }),
     [t.envLabel, t.socLabel, t.govLabel]
   );
@@ -234,23 +418,40 @@ export default function DetailsPage() {
     );
   }, [sector]);
 
-  /* ---------------- Load assessment from Firestore (only if needed) ---------------- */
+  const sectorQuestions = useMemo(() => {
+    return getQuestionsForSector(sector || "") || [];
+  }, [sector]);
+
+  const answers = useMemo(() => {
+    return buildAnswersArrayFromMap(sector, answersMap);
+  }, [sector, answersMap]);
+
+  /* ---------------- Load assessment/profile ---------------- */
   useEffect(() => {
     (async () => {
       const u = auth.currentUser;
+
       if (!u) {
         navigate("/login");
         return;
       }
 
-      // If we already have usable sector+answers from route state and no assessmentId, skip Firestore.
-      const initSector = initialRef.current.sector;
-      const initAnswers = initialRef.current.answers;
+      try {
+        const userSnap = await getDoc(doc(db, "users", u.uid));
+        const userData = userSnap.exists() ? userSnap.data() : {};
+        setProfile(userData.profile || {});
+      } catch (err) {
+        console.error("Failed to load user profile", err);
+        setProfile({});
+      }
 
-      const coercedInitAnswers = coerceAnswersForDetails(initSector, initAnswers);
-      if (initSector && coercedInitAnswers.length > 0 && !assessmentId) {
-        setSector(initSector);
-        setAnswers(coercedInitAnswers);
+      if (
+        seededSector &&
+        Object.keys(seededAnswersMap).length > 0 &&
+        !assessmentId
+      ) {
+        setSector(seededSector);
+        setAnswersMap(seededAnswersMap);
         setLoading(false);
         return;
       }
@@ -262,7 +463,10 @@ export default function DetailsPage() {
       }
 
       try {
-        const snap = await getDoc(doc(db, "users", u.uid, "assessments", assessmentId));
+        const snap = await getDoc(
+          doc(db, "users", u.uid, "assessments", assessmentId)
+        );
+
         if (!snap.exists()) {
           setLoadError("Assessment not found.");
           setLoading(false);
@@ -271,7 +475,6 @@ export default function DetailsPage() {
 
         const data = snap.data() || {};
 
-        // Prefer canonical stored scores if present (0..100)
         const hasStored =
           typeof data.overallScore === "number" &&
           typeof data.envScore === "number" &&
@@ -289,11 +492,8 @@ export default function DetailsPage() {
             : null
         );
 
-        const sectorFromDoc = data.sector || "";
-        const rawAnswersMap = data.answers || {};
-
-        setSector(sectorFromDoc);
-        setAnswers(buildAnswersArrayFromMap(sectorFromDoc, rawAnswersMap));
+        setSector(data.sector || "");
+        setAnswersMap(data.answers || {});
         setLoading(false);
       } catch (e) {
         console.error("Error loading assessment for details", e);
@@ -301,44 +501,42 @@ export default function DetailsPage() {
         setLoading(false);
       }
     })();
-  }, [assessmentId, navigate]);
+  }, [assessmentId, navigate, seededSector, seededAnswersMap]);
 
   /* ---------------- Scores ---------------- */
   const computedScoresObj = useMemo(() => {
-    const categoryScoresRaw = { Environmental: [], Social: [], Governance: [] };
+    const categoryScoresRaw = {
+      Environmental: [],
+      Social: [],
+      Governance: [],
+    };
 
-    (answers || []).forEach(
-      ({ question, score, answerScore, numericScore, answer }) => {
-        const cat = question?.category;
-        if (!cat || !categoryScoresRaw[cat]) return;
+    (answers || []).forEach(({ question, score }) => {
+      const cat = question?.category;
+      if (!cat || !categoryScoresRaw[cat]) return;
 
-        let numeric =
-          typeof score === "number"
-            ? score
-            : typeof answerScore === "number"
-            ? answerScore
-            : typeof numericScore === "number"
-            ? numericScore
-            : answer === "Yes"
-            ? 4
-            : 0;
+      let numeric = typeof score === "number" ? score : 0;
+      numeric = Math.max(0, Math.min(4, numeric));
 
-        numeric = Math.max(0, Math.min(4, numeric));
-        categoryScoresRaw[cat].push(numeric);
-      }
-    );
+      categoryScoresRaw[cat].push(numeric);
+    });
 
     const out = {};
+
     for (const category in categoryScoresRaw) {
       const values = categoryScoresRaw[category];
+
       if (!values.length) {
         out[category] = 0;
         continue;
       }
+
       const sum = values.reduce((acc, v) => acc + v, 0);
       const max = values.length * 4;
+
       out[category] = Math.round((sum / max) * 100);
     }
+
     return out;
   }, [answers]);
 
@@ -350,6 +548,7 @@ export default function DetailsPage() {
         Governance: storedScores.govScore,
       };
     }
+
     return computedScoresObj;
   }, [storedScores, computedScoresObj]);
 
@@ -364,57 +563,37 @@ export default function DetailsPage() {
     return Math.round(val * 10) / 10;
   }, [storedScores, scoresObj, categoryWeights]);
 
-  /* ---------------- Critical pillar logic ---------------- */
-  const criticalEntry = useMemo(() => {
-    return Object.entries(scoresObj || {}).find(([_, v]) => {
-      return typeof v === "number" && !Number.isNaN(v) && v <= 20;
-    });
+  /* ---------------- Corrected critical pillar logic ---------------- */
+  const criticalScoreStatus = useMemo(() => {
+    return evaluateCriticalScore(scoresObj);
   }, [scoresObj]);
 
-  const hasCriticalPillar = !!criticalEntry;
-  const criticalCategory = criticalEntry ? criticalEntry[0] : null;
+  const hasCriticalPillar = criticalScoreStatus.level === "critical";
+  const shouldHideOverallScore = criticalScoreStatus.hideOverallScore;
+
+  const criticalPillarCodes = useMemo(() => {
+    return criticalScoreStatus.criticalPillars.map(fullPillarToCode);
+  }, [criticalScoreStatus.criticalPillars]);
+
+  const criticalPillarNames = useMemo(() => {
+    return criticalScoreStatus.criticalPillars.map(
+      (pillar) => categoryLabelMap[pillar] || pillar
+    );
+  }, [criticalScoreStatus.criticalPillars, categoryLabelMap]);
 
   useEffect(() => {
     if (hasCriticalPillar) {
-      setCriticalPillar(criticalCategory);
       setShowModal(true);
     }
-  }, [hasCriticalPillar, criticalCategory]);
+  }, [hasCriticalPillar]);
 
   const getRating = () => {
-    if (hasCriticalPillar) return "❌ Critical";
+    if (hasCriticalPillar) return "❌ Critical ESG gap";
     if (overall >= 80) return "✅ Excellent";
     if (overall >= 60) return "👍 Good";
     if (overall >= 40) return "⚠️ Needs Work";
     return "❌ Critical";
   };
-
-  const suggestionsByCategory = useMemo(
-    () => ({
-      Environmental: [
-        "Switch to renewable energy sources.",
-        "Track and reduce carbon emissions.",
-        "Improve waste and water management.",
-      ],
-      Social: [
-        "Promote workplace diversity.",
-        "Improve employee health and safety.",
-        "Support community initiatives.",
-      ],
-      Governance: [
-        "Appoint an ESG officer.",
-        "Improve supply chain transparency.",
-        "Enforce an anti-bribery policy.",
-      ],
-    }),
-    []
-  );
-
-  const lowScoreCategories = useMemo(() => {
-    return Object.entries(scoresObj)
-      .filter(([_, score]) => (typeof score === "number" ? score < 50 : false))
-      .map(([category]) => category);
-  }, [scoresObj]);
 
   const normalizedScores = useMemo(
     () => ({
@@ -426,19 +605,69 @@ export default function DetailsPage() {
     [scoresObj, overall]
   );
 
+  /* ---------------- Suggestions preview ---------------- */
+  const suggestionPreview = useMemo(() => {
+    if (!sectorQuestions.length) return [];
+
+    const rawSuggestions = getTailoredSuggestions({
+      sector,
+      questions: sectorQuestions,
+      answers: answersMap,
+      profile,
+      limit: hasCriticalPillar ? 10 : 5,
+      pillarPercents: {
+        E: scoresObj.Environmental ?? 0,
+        S: scoresObj.Social ?? 0,
+        G: scoresObj.Governance ?? 0,
+      },
+      pillarThreshold: hasCriticalPillar ? CRITICAL_PILLAR_THRESHOLD : 50,
+      fallbackLowestNPillars: hasCriticalPillar ? 3 : 2,
+    });
+
+    if (!hasCriticalPillar) {
+      return rawSuggestions.slice(0, 5);
+    }
+
+    const criticalFocused = rawSuggestions.filter((item) =>
+      criticalPillarCodes.includes(item.pillar)
+    );
+
+    return (criticalFocused.length ? criticalFocused : rawSuggestions).slice(
+      0,
+      5
+    );
+  }, [
+    sector,
+    sectorQuestions,
+    answersMap,
+    profile,
+    scoresObj,
+    hasCriticalPillar,
+    criticalPillarCodes,
+  ]);
+
+  const suggestionPreviewForSave = useMemo(() => {
+    return (suggestionPreview || []).slice(0, 5).map((item) => ({
+      id: item.id,
+      title: item.title,
+      text: item.text,
+      pillar: item.pillar,
+      answerLabel: item.answerLabel,
+      impact: item.impact,
+      timeframe: item.timeframe,
+    }));
+  }, [suggestionPreview]);
+
   /* ---------------- Write summary back to Firestore ---------------- */
   useEffect(() => {
     const saveSummary = async () => {
       if (loading) return;
+
       const u = auth.currentUser;
       if (!u) return;
       if (!assessmentId) return;
 
       try {
-        const userSnap = await getDoc(doc(db, "users", u.uid));
-        const userData = userSnap.exists() ? userSnap.data() : {};
-        const profile = userData.profile || {};
-
         const sectorBench = benchmarkData[sector] || null;
         let benchmarkPayload = null;
 
@@ -453,19 +682,36 @@ export default function DetailsPage() {
           const sumW = wE + wS + wG || 1;
 
           const sectorAvgOverall =
-            Math.round(((sectorAvgE * wE + sectorAvgS * wS + sectorAvgG * wG) / sumW) * 10) / 10;
+            Math.round(
+              ((sectorAvgE * wE + sectorAvgS * wS + sectorAvgG * wG) / sumW) *
+                10
+            ) / 10;
 
-          benchmarkPayload = { sectorAvgE, sectorAvgS, sectorAvgG, sectorAvgOverall };
+          benchmarkPayload = {
+            sectorAvgE,
+            sectorAvgS,
+            sectorAvgG,
+            sectorAvgOverall,
+          };
         }
 
         await updateDoc(doc(db, "users", u.uid, "assessments", assessmentId), {
           sector: sector || profile.sector || null,
           size: profile.size || null,
           country: profile.country || null,
-          csrdInScope: profile.csrd === "Yes",
+          csrdInScope: profile.csrd === "Yes" || profile.csrdInScope === true,
 
-          // canonical fields (0..100)
           overallScore: overall,
+          overallScoreHidden: shouldHideOverallScore,
+          criticalScoreStatus: {
+            level: criticalScoreStatus.level,
+            threshold: CRITICAL_PILLAR_THRESHOLD,
+            hideOverallScore: shouldHideOverallScore,
+            criticalPillars: criticalScoreStatus.criticalPillars,
+            weakPillars: criticalScoreStatus.weakPillars,
+            imbalanceGap: criticalScoreStatus.imbalanceGap,
+          },
+
           envScore: scoresObj.Environmental ?? 0,
           socScore: scoresObj.Social ?? 0,
           govScore: scoresObj.Governance ?? 0,
@@ -478,6 +724,9 @@ export default function DetailsPage() {
           timeline: profile.timeline || null,
           benchmarkRegion: benchmarkRegion || "eu",
           language: language || "en",
+
+          suggestionPreview: suggestionPreviewForSave,
+          suggestionCount: suggestionPreviewForSave.length,
         });
       } catch (err) {
         console.error("Failed to update assessment summary:", err);
@@ -490,13 +739,17 @@ export default function DetailsPage() {
     assessmentId,
     sector,
     overall,
+    shouldHideOverallScore,
+    criticalScoreStatus,
     scoresObj,
     categoryWeights,
     benchmarkRegion,
     language,
+    profile,
+    suggestionPreviewForSave,
   ]);
 
-  /* ---------------- Narrative: "What this means" ---------------- */
+  /* ---------------- Narrative ---------------- */
   const sectorBenchmark = benchmarkData[sector] || null;
 
   const sectorBenchmarkOverall = useMemo(() => {
@@ -517,16 +770,50 @@ export default function DetailsPage() {
   const weakest = useMemo(() => {
     const entries = Object.entries(scoresObj || {});
     if (!entries.length) return { pillar: null, score: null };
+
     const sorted = [...entries].sort((a, b) => a[1] - b[1]);
-    return { pillar: sorted[0][0], score: sorted[0][1] };
+
+    return {
+      pillar: sorted[0][0],
+      score: sorted[0][1],
+    };
   }, [scoresObj]);
 
   const summaryBullets = useMemo(() => {
     const bullets = [];
 
-    // Bullet 1: vs sector median
+    if (hasCriticalPillar) {
+      bullets.push({
+        id: "critical-hidden",
+        text:
+          language === "it"
+            ? `Il punteggio complessivo non viene mostrato perché ${criticalPillarNames.join(
+                ", "
+              )} ha un punteggio pari o inferiore al 20%.`
+            : `The overall score is not displayed because ${criticalPillarNames.join(
+                ", "
+              )} scored 20% or below.`,
+        tooltip:
+          language === "it"
+            ? "Una media ponderata potrebbe nascondere una debolezza seria in un pilastro ESG."
+            : "A weighted average could hide a serious weakness in one ESG pillar.",
+      });
+
+      bullets.push({
+        id: "critical-next-step",
+        text: t.criticalNextStep,
+        tooltip:
+          language === "it"
+            ? "In caso di gap critico, la priorità non è migliorare tutto, ma correggere prima il pilastro più debole."
+            : "When a critical gap exists, the priority is not to improve everything at once, but to fix the weakest pillar first.",
+      });
+
+      return bullets;
+    }
+
     if (sectorBenchmarkOverall !== null && !Number.isNaN(overall)) {
       const diff = overall - sectorBenchmarkOverall;
+
       let posEn = "around the median for";
       let posIt = "intorno alla media per";
 
@@ -553,7 +840,6 @@ export default function DetailsPage() {
       });
     }
 
-    // Bullet 2: weakest pillar
     if (weakest.pillar) {
       const pillarLabel = categoryLabelMap[weakest.pillar] || weakest.pillar;
       const s = weakest.score ?? 0;
@@ -583,7 +869,6 @@ export default function DetailsPage() {
       });
     }
 
-    // Fallback
     if (!bullets.length && !Number.isNaN(overall)) {
       bullets.push({
         id: "fallback",
@@ -599,7 +884,17 @@ export default function DetailsPage() {
     }
 
     return bullets;
-  }, [sectorBenchmarkOverall, overall, sector, language, weakest, categoryLabelMap]);
+  }, [
+    hasCriticalPillar,
+    criticalPillarNames,
+    language,
+    t.criticalNextStep,
+    sectorBenchmarkOverall,
+    overall,
+    sector,
+    weakest,
+    categoryLabelMap,
+  ]);
 
   /* ---------------- Actions ---------------- */
   const handleStartOver = () => navigate("/dashboard");
@@ -609,6 +904,7 @@ export default function DetailsPage() {
     if (!input) return;
 
     const scrollY = window.scrollY;
+
     const canvas = await html2canvas(input, {
       scale: 2,
       scrollY: -scrollY,
@@ -616,6 +912,7 @@ export default function DetailsPage() {
     });
 
     const imgData = canvas.toDataURL("image/png");
+
     const pdf = new jsPDF({
       orientation: "portrait",
       unit: "px",
@@ -629,10 +926,15 @@ export default function DetailsPage() {
   const goCritical = () => {
     navigate("/critical", {
       state: {
+        assessmentId,
         sector,
         answers,
-        scores: normalizedScores, // 0..100
-        threshold: 20, // 20%
+        answersMap,
+        questions: sectorQuestions,
+        profile,
+        scores: normalizedScores,
+        threshold: CRITICAL_PILLAR_THRESHOLD,
+        criticalScoreStatus,
       },
     });
   };
@@ -640,10 +942,15 @@ export default function DetailsPage() {
   const goSuggestions = () => {
     navigate("/suggestions", {
       state: {
+        assessmentId,
         sector,
         answers,
-        scores: normalizedScores, // 0..100
-        threshold: 20,
+        answersMap,
+        questions: sectorQuestions,
+        profile,
+        scores: normalizedScores,
+        threshold: CRITICAL_PILLAR_THRESHOLD,
+        criticalScoreStatus,
       },
     });
   };
@@ -702,7 +1009,7 @@ export default function DetailsPage() {
             </ResponsiveContainer>
           </div>
 
-          {!hasCriticalPillar ? (
+          {!shouldHideOverallScore ? (
             <>
               <div
                 style={{
@@ -719,6 +1026,7 @@ export default function DetailsPage() {
                   </strong>{" "}
                   ({getRating()})
                 </span>
+
                 <InfoTooltip>
                   {language === "it" ? (
                     <>
@@ -745,85 +1053,132 @@ export default function DetailsPage() {
                   color: "#555",
                 }}
               >
-                🧮 Applied Weights: {t.envLabel}:{" "}
+                🧮 {t.appliedWeightsLabel}: {t.envLabel}:{" "}
                 {(categoryWeights.Environmental * 100).toFixed(0)}% |{" "}
                 {t.socLabel}: {(categoryWeights.Social * 100).toFixed(0)}% |{" "}
-                {t.govLabel}:{" "}
-                {(categoryWeights.Governance * 100).toFixed(0)}%
+                {t.govLabel}: {(categoryWeights.Governance * 100).toFixed(0)}%
               </p>
+            </>
+          ) : (
+            <section
+              style={{
+                marginTop: "2rem",
+                padding: "1rem 1.25rem",
+                borderRadius: "12px",
+                border: "1px solid #fecaca",
+                backgroundColor: "#fef2f2",
+                textAlign: "left",
+              }}
+            >
+              <h3 style={{ marginTop: 0, marginBottom: "0.5rem" }}>
+                🚨 {t.overallHiddenTitle}
+              </h3>
 
-              <section
+              <p
                 style={{
-                  marginTop: "1.75rem",
-                  padding: "1rem 1.25rem",
-                  borderRadius: "12px",
-                  border: "1px solid #e2e8f0",
-                  backgroundColor: "#f8fafc",
-                  textAlign: "left",
+                  marginTop: 0,
+                  fontSize: "0.92rem",
+                  lineHeight: 1.5,
+                  color: "#7f1d1d",
                 }}
               >
-                <div
+                {t.overallHiddenBody}
+              </p>
+
+              <p
+                style={{
+                  marginTop: "0.75rem",
+                  fontSize: "0.92rem",
+                  color: "#7f1d1d",
+                }}
+              >
+                <strong>{t.criticalPillarsLabel}:</strong>{" "}
+                {criticalPillarNames.join(", ")}
+              </p>
+
+              <p
+                style={{
+                  marginTop: "0.5rem",
+                  fontSize: "0.85rem",
+                  color: "#7f1d1d",
+                }}
+              >
+                🧮 {t.appliedWeightsLabel}: {t.envLabel}:{" "}
+                {(categoryWeights.Environmental * 100).toFixed(0)}% |{" "}
+                {t.socLabel}: {(categoryWeights.Social * 100).toFixed(0)}% |{" "}
+                {t.govLabel}: {(categoryWeights.Governance * 100).toFixed(0)}%
+              </p>
+            </section>
+          )}
+
+          <section
+            style={{
+              marginTop: "1.75rem",
+              padding: "1rem 1.25rem",
+              borderRadius: "12px",
+              border: "1px solid #e2e8f0",
+              backgroundColor: "#f8fafc",
+              textAlign: "left",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                marginBottom: 4,
+              }}
+            >
+              <h3
+                style={{
+                  margin: 0,
+                  fontSize: "1rem",
+                  fontWeight: 600,
+                }}
+              >
+                🧠 {t.whatThisMeansTitle}
+              </h3>
+
+              <InfoTooltip>
+                <strong>
+                  {language === "it"
+                    ? "Come leggere questo riepilogo"
+                    : "How to read this summary"}
+                </strong>
+                <br />
+                {t.whatThisMeansIntro}
+              </InfoTooltip>
+            </div>
+
+            <ul
+              style={{
+                margin: "0.35rem 0 0",
+                paddingLeft: "1.1rem",
+                fontSize: "0.9rem",
+                lineHeight: 1.5,
+              }}
+            >
+              {summaryBullets.map((item) => (
+                <li
+                  key={item.id}
                   style={{
                     display: "flex",
-                    alignItems: "center",
+                    alignItems: "flex-start",
                     gap: 6,
                     marginBottom: 4,
                   }}
                 >
-                  <h3
-                    style={{
-                      margin: 0,
-                      fontSize: "1rem",
-                      fontWeight: 600,
-                    }}
-                  >
-                    🧠 {t.whatThisMeansTitle}
-                  </h3>
+                  <span>{item.text}</span>
                   <InfoTooltip>
-                    <strong>
-                      {language === "it"
-                        ? "Come leggere questo riepilogo"
-                        : "How to read this summary"}
-                    </strong>
-                    <br />
-                    {t.whatThisMeansIntro}
+                    <span>{item.tooltip}</span>
                   </InfoTooltip>
-                </div>
-
-                <ul
-                  style={{
-                    margin: "0.35rem 0 0",
-                    paddingLeft: "1.1rem",
-                    fontSize: "0.9rem",
-                    lineHeight: 1.5,
-                  }}
-                >
-                  {summaryBullets.map((item) => (
-                    <li
-                      key={item.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "flex-start",
-                        gap: 6,
-                        marginBottom: 4,
-                      }}
-                    >
-                      <span>{item.text}</span>
-                      <InfoTooltip>
-                        <span>{item.tooltip}</span>
-                      </InfoTooltip>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            </>
-          ) : (
-            <p style={{ marginTop: "2rem" }}>
-              🌟 <strong>Result:</strong> ❌ Critical
-            </p>
-          )}
+                </li>
+              ))}
+            </ul>
+          </section>
 
           <h3 style={{ marginTop: "2rem" }}>📂 {t.breakdownTitle}</h3>
+
           <p
             style={{
               marginTop: "0.25rem",
@@ -835,55 +1190,120 @@ export default function DetailsPage() {
           </p>
 
           <ul style={{ textAlign: "left", padding: "0 1.5rem" }}>
-            {Object.entries(scoresObj).map(([category, score]) => (
-              <li key={category}>
-                <strong>{categoryLabelMap[category] || category}:</strong>{" "}
-                {score}%
-                <span
-                  title={
-                    category === "Environmental"
-                      ? "Reflects how well your company manages energy, emissions, and resource use."
-                      : category === "Social"
-                      ? "Measures practices regarding employee welfare, community engagement, and human rights."
-                      : "Evaluates corporate policies, board structure, and ethical conduct."
-                  }
-                  style={{
-                    marginLeft: "0.5rem",
-                    cursor: "help",
-                    fontSize: "1rem",
-                    color: "#555",
-                  }}
-                >
-                  ℹ️
-                </span>
-                <div style={{ fontSize: "0.9rem", color: "#777" }}>
-                  {t.industryAverageLabel}:{" "}
-                  {benchmarkData[sector]?.[category] ?? "N/A"}%
-                </div>
-              </li>
-            ))}
+            {Object.entries(scoresObj).map(([category, score]) => {
+              const isCritical =
+                typeof score === "number" &&
+                !Number.isNaN(score) &&
+                score <= CRITICAL_PILLAR_THRESHOLD;
+
+              return (
+                <li key={category} style={{ marginBottom: "0.75rem" }}>
+                  <strong>{categoryLabelMap[category] || category}:</strong>{" "}
+                  <span
+                    style={{
+                      fontWeight: isCritical ? 700 : 400,
+                      color: isCritical ? "#b91c1c" : "inherit",
+                    }}
+                  >
+                    {score}%
+                  </span>
+                  {isCritical && (
+                    <span
+                      style={{
+                        marginLeft: "0.5rem",
+                        color: "#b91c1c",
+                        fontWeight: 700,
+                      }}
+                    >
+                      Critical
+                    </span>
+                  )}
+                  <span
+                    title={
+                      category === "Environmental"
+                        ? "Reflects how well your company manages energy, emissions, and resource use."
+                        : category === "Social"
+                        ? "Measures practices regarding employee welfare, community engagement, and human rights."
+                        : "Evaluates corporate policies, board structure, and ethical conduct."
+                    }
+                    style={{
+                      marginLeft: "0.5rem",
+                      cursor: "help",
+                      fontSize: "1rem",
+                      color: "#555",
+                    }}
+                  >
+                    ℹ️
+                  </span>
+                  <div style={{ fontSize: "0.9rem", color: "#777" }}>
+                    {t.industryAverageLabel}:{" "}
+                    {benchmarkData[sector]?.[category] ?? "N/A"}%
+                  </div>
+                </li>
+              );
+            })}
           </ul>
 
-          {lowScoreCategories.length > 0 && (
+          {suggestionPreview.length > 0 && (
             <>
               <h3 style={{ marginTop: "2rem" }}>🔍 {t.suggestionsTitle}</h3>
-              {lowScoreCategories.map((category) => (
-                <div
-                  key={category}
+
+              {hasCriticalPillar && (
+                <p
                   style={{
                     textAlign: "left",
                     padding: "0 1.5rem",
-                    marginBottom: "1rem",
+                    fontSize: "0.9rem",
+                    color: "#7f1d1d",
                   }}
                 >
-                  <strong>{categoryLabelMap[category] || category}</strong>
-                  <ul>
-                    {(suggestionsByCategory[category] || []).map((tip, i) => (
-                      <li key={i}>✅ {tip}</li>
-                    ))}
-                  </ul>
-                </div>
-              ))}
+                  {language === "it"
+                    ? "Poiché è stato rilevato un gap critico, i suggerimenti sono prioritariamente orientati al pilastro critico."
+                    : "Because a critical gap was detected, suggestions are prioritized toward the critical pillar."}
+                </p>
+              )}
+
+              <div style={{ textAlign: "left", padding: "0 1.5rem" }}>
+                {suggestionPreview.map((item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      marginBottom: "1rem",
+                      padding: "0.9rem 1rem",
+                      border: "1px solid #e2e8f0",
+                      borderRadius: "12px",
+                      background: "#fff",
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, marginBottom: 6 }}>
+                      {item.title}
+                    </div>
+
+                    <div
+                      style={{
+                        fontSize: "0.92rem",
+                        lineHeight: 1.5,
+                        color: "#334155",
+                        marginBottom: 8,
+                      }}
+                    >
+                      {item.text}
+                    </div>
+
+                    <div style={{ fontSize: "0.82rem", color: "#64748b" }}>
+                      <strong>
+                        {pillarCodeLabelMap[item.pillar] || item.pillar}
+                      </strong>
+                      {" • "}
+                      {item.answerLabel}
+                      {" • "}
+                      {item.impact}
+                      {" • "}
+                      {item.timeframe}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </>
           )}
         </div>
@@ -901,15 +1321,19 @@ export default function DetailsPage() {
           <button className="start-button" onClick={handleStartOver}>
             🔁 {t.startOver}
           </button>
+
           <button className="outline-button" onClick={handleDownloadPDF}>
             📄 {t.downloadPdf}
           </button>
+
           <button className="btn btn--primary" onClick={goSuggestions}>
             💡 {t.seeSuggestions}
           </button>
+
           <button className="btn" onClick={goDashboard}>
             🏠 {t.goDashboard}
           </button>
+
           {hasCriticalPillar && (
             <button className="btn btn--danger" onClick={goCritical}>
               🚨 {t.openCriticalReview}
@@ -938,20 +1362,41 @@ export default function DetailsPage() {
                 padding: "2rem",
                 borderRadius: "10px",
                 width: "90%",
-                maxWidth: "400px",
+                maxWidth: "440px",
                 textAlign: "center",
               }}
             >
               <h3>⚠️ {t.criticalAlertTitle}</h3>
-              <p style={{ marginTop: "1rem" }}>
-                {t.criticalAlertBodyPrefix}{" "}
-                <strong>
-                  "{categoryLabelMap[criticalPillar] || criticalPillar}"
-                </strong>{" "}
-                {t.criticalAlertBodySuffix}
+
+              <p
+                style={{
+                  marginTop: "1rem",
+                  fontSize: "0.95rem",
+                  lineHeight: 1.5,
+                }}
+              >
+                {t.criticalAlertBody}
               </p>
 
-              <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+              <p
+                style={{
+                  marginTop: "0.75rem",
+                  fontSize: "0.95rem",
+                }}
+              >
+                <strong>{t.criticalPillarsLabel}:</strong>{" "}
+                {criticalPillarNames.join(", ")}
+              </p>
+
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  justifyContent: "center",
+                  marginTop: "1.25rem",
+                  flexWrap: "wrap",
+                }}
+              >
                 <button
                   className="btn btn--primary"
                   onClick={() => {
@@ -961,6 +1406,7 @@ export default function DetailsPage() {
                 >
                   {t.openCriticalReview}
                 </button>
+
                 <button className="btn" onClick={() => setShowModal(false)}>
                   {t.close}
                 </button>
@@ -972,10 +1418,6 @@ export default function DetailsPage() {
     </div>
   );
 }
-
-
-
-
 
 
 

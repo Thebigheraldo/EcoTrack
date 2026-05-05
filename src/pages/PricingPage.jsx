@@ -4,6 +4,15 @@ import "../components/landing.css";
 import { useNavigate, useLocation, Link } from "react-router-dom";
 import { auth } from "../firebase";
 
+const LEGAL_LINKS = [
+  { to: "/terms-and-conditions", label: "Terms of Use" },
+  { to: "/privacy-policy", label: "Privacy Policy" },
+  { to: "/refund-policy", label: "Refund Policy" },
+  { to: "/cookie-policy", label: "Cookie Policy" },
+  { to: "/dpa", label: "DPA" },
+  { to: "/legal-notice", label: "Legal Notice" },
+];
+
 export default function PricingPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -29,6 +38,7 @@ export default function PricingPage() {
       <main className="eco-landing-main">
         <section className="eco-section eco-fade-in">
           <h1 className="eco-section-title">EcoTrack subscription</h1>
+
           <p className="eco-section-subtitle">
             EcoTrack is currently offered as a single, simple plan designed for
             small and medium businesses that want a clear ESG self-assessment.
@@ -73,6 +83,7 @@ export default function PricingPage() {
                   >
                     Annual plan
                   </p>
+
                   <h2
                     style={{
                       fontSize: 22,
@@ -103,7 +114,7 @@ export default function PricingPage() {
                   margin: "8px 0 14px",
                 }}
               >
-                <li>Access to all ESG questionnaires (by sector).</li>
+                <li>Access to all ESG questionnaires by sector.</li>
                 <li>Dashboard with E / S / G pillar scores and maturity level.</li>
                 <li>Top weaknesses and tailored suggestions for improvement.</li>
                 <li>Downloadable PDF report for each assessment.</li>
@@ -136,19 +147,85 @@ export default function PricingPage() {
               </p>
             </div>
 
-            <div style={{ fontSize: 12, color: "#6b7280", maxWidth: 520 }}>
+            <div
+              style={{
+                fontSize: 12,
+                color: "#6b7280",
+                maxWidth: 560,
+                lineHeight: 1.6,
+              }}
+            >
               <p>
                 <strong>Note:</strong> during the beta phase, the next step is a
                 simulated payment page. Once Stripe is integrated, this will
                 become a real checkout experience.
               </p>
+
+              <p>
+                By proceeding, users will be asked to review and accept the
+                applicable legal documents before accessing the checkout.
+              </p>
             </div>
           </div>
         </section>
+
+        <PricingLegalFooter />
       </main>
     </div>
   );
 }
 
+function PricingLegalFooter() {
+  return (
+    <footer
+      style={{
+        marginTop: "3rem",
+        paddingTop: "1.5rem",
+        paddingBottom: "1rem",
+        borderTop: "1px solid #e5e7eb",
+        textAlign: "center",
+        fontSize: "0.85rem",
+        color: "#64748b",
+      }}
+    >
+      <div
+        style={{
+          marginBottom: 8,
+          fontSize: 12,
+          color: "#64748b",
+        }}
+      >
+        Legal documents
+      </div>
 
+      <div
+        style={{
+          display: "flex",
+          gap: "0.85rem",
+          justifyContent: "center",
+          alignItems: "center",
+          flexWrap: "wrap",
+        }}
+      >
+        {LEGAL_LINKS.map((item, index) => (
+          <React.Fragment key={item.to}>
+            <Link
+              to={item.to}
+              style={{
+                color: "#148A58",
+                textDecoration: "none",
+                fontWeight: 500,
+              }}
+            >
+              {item.label}
+            </Link>
 
+            {index < LEGAL_LINKS.length - 1 && (
+              <span style={{ color: "#CBD5E1" }}>•</span>
+            )}
+          </React.Fragment>
+        ))}
+      </div>
+    </footer>
+  );
+}
