@@ -129,6 +129,10 @@ function pickFirst(...vals) {
   return "";
 }
 
+function deletionStorageKey(uid) {
+  return `ecotrackDeletionRequestSent:${uid}`;
+}
+
 /* ===========================
    PDF helpers
 =========================== */
@@ -277,6 +281,9 @@ export default function ProfileSettings() {
 
   const [requestingDeletion, setRequestingDeletion] = useState(false);
   const [deleteErr, setDeleteErr] = useState("");
+  const [deletionPopup, setDeletionPopup] = useState(null);
+  const [deletionRequestKnownSent, setDeletionRequestKnownSent] =
+    useState(false);
 
   useEffect(() => {
     (async () => {
@@ -288,6 +295,18 @@ export default function ProfileSettings() {
       }
 
       setEmail(u.email || "");
+
+      try {
+        const storedDeletionRequest = window.localStorage.getItem(
+          deletionStorageKey(u.uid)
+        );
+
+        if (storedDeletionRequest === "true") {
+          setDeletionRequestKnownSent(true);
+        }
+      } catch {
+        // localStorage may be unavailable in some browsers/settings.
+      }
 
       const ref = doc(db, "users", u.uid);
       const snap = await getDoc(ref);
@@ -441,6 +460,29 @@ export default function ProfileSettings() {
 
     if (!u) {
       setDeleteErr("Not authenticated.");
+      setDeletionPopup({
+        title: "Login required",
+        message: "You need to be logged in to request account deletion.",
+      });
+      return;
+    }
+
+    let alreadyRequestedLocally = deletionRequestKnownSent;
+
+    try {
+      alreadyRequestedLocally =
+        alreadyRequestedLocally ||
+        window.localStorage.getItem(deletionStorageKey(u.uid)) === "true";
+    } catch {
+      // localStorage may be unavailable. Continue with the callable function.
+    }
+
+    if (alreadyRequestedLocally) {
+      setDeletionPopup({
+        title: "Request already sent",
+        message:
+          "Your account deletion request has already been sent and will be handled by Viridis.",
+      });
       return;
     }
 
@@ -462,15 +504,35 @@ export default function ProfileSettings() {
         note: "User requested account deletion from Profile & Settings.",
       });
 
-      setMsg(
+      const successMessage =
         result.data?.message ||
-          "Your account deletion request has been received."
-      );
+        "Your account deletion request has been submitted and will be handled by Viridis.";
+
+      try {
+        window.localStorage.setItem(deletionStorageKey(u.uid), "true");
+      } catch {
+        // localStorage may be unavailable. The server request still succeeded.
+      }
+
+      setDeletionRequestKnownSent(true);
+      setMsg(successMessage);
+
+      setDeletionPopup({
+        title: "Request submitted",
+        message: successMessage,
+      });
     } catch (e) {
       console.error("Account deletion request error:", e);
-      setDeleteErr(
-        "We could not submit your deletion request. Please contact info@viridisconsultancy.com."
-      );
+
+      const message =
+        "We could not submit your deletion request. Please contact info@viridisconsultancy.com.";
+
+      setDeleteErr(message);
+
+      setDeletionPopup({
+        title: "Something went wrong",
+        message,
+      });
     } finally {
       setRequestingDeletion(false);
     }
@@ -1272,6 +1334,74 @@ export default function ProfileSettings() {
           </Card>
         </div>
       </main>
+
+      {deletionPopup && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+            padding: 20,
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            style={{
+              width: "100%",
+              maxWidth: 420,
+              background: "#ffffff",
+              borderRadius: 18,
+              padding: 24,
+              boxShadow: "0 20px 50px rgba(15, 23, 42, 0.25)",
+              border: "1px solid #e2e8f0",
+            }}
+          >
+            <h3
+              style={{
+                marginTop: 0,
+                marginBottom: 10,
+                color: "#111827",
+                fontSize: 20,
+              }}
+            >
+              {deletionPopup.title}
+            </h3>
+
+            <p
+              style={{
+                color: "#475569",
+                fontSize: 15,
+                lineHeight: 1.6,
+                marginBottom: 22,
+              }}
+            >
+              {deletionPopup.message}
+            </p>
+
+            <button
+              type="button"
+              onClick={() => setDeletionPopup(null)}
+              style={{
+                width: "100%",
+                padding: "11px 14px",
+                borderRadius: 12,
+                border: "none",
+                background: "#148A58",
+                color: "white",
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
